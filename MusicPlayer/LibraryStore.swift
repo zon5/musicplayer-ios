@@ -143,6 +143,24 @@ final class LibraryStore: ObservableObject {
         for s in victims { delete(s) }
     }
 
+    /// 编辑歌曲信息：改标题/歌手/专辑/词曲/年月/歌词，写回 library.json 与歌词缓存
+    func update(_ song: Song, lrcText: String?) {
+        guard let idx = songs.firstIndex(where: { $0.id == song.id }) else { return }
+        var s = song
+        if let lrc = lrcText {
+            let name = "edit_" + Self.stableHash(s.id) + ".lrc"
+            let trimmed = lrc.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                s.lrcName = nil
+            } else if (try? trimmed.write(to: Self.documents.appendingPathComponent(name), atomically: true, encoding: .utf8)) != nil {
+                s.lrcName = name
+            }
+        }
+        songs[idx] = s
+        save()
+        NotificationCenter.default.post(name: .songMetaDidUpdate, object: s.id, userInfo: ["song": s])
+    }
+
     func delete(_ song: Song) {
         // 系统库的歌没有本地文件可删，只从显示列表移除；下次"读取系统音乐库"会再出现（符合预期，那是系统库里的歌）
         if !song.isSystem {
@@ -190,6 +208,11 @@ final class LibraryStore: ObservableObject {
             if (try? lrc.write(to: Self.documents.appendingPathComponent(name), atomically: true, encoding: .utf8)) != nil {
                 song.lrcName = name
             }
+            // 译文单独落盘，LrcParser.lines 读取时按时间合并
+            if let tr = meta.tlyric, !tr.isEmpty {
+                let trName = "net_" + Self.stableHash(song.id) + ".tlyric"
+                try? tr.write(to: Self.documents.appendingPathComponent(trName), atomically: true, encoding: .utf8)
+            }
         }
         if song.releaseYm == nil { song.releaseYm = meta.releaseYm }
         if song.writerLyric == nil { song.writerLyric = meta.writerLyric }
@@ -208,6 +231,16 @@ final class LibraryStore: ObservableObject {
     /// 首页/播放时按需补：缺任意一项就联网，串行避免打爆接口
     func needsEnrich(_ song: Song) -> Bool {
         song.lrcName == nil || song.releaseYm == nil || song.writerLyric == nil || song.writerMusic == nil
+    }
+
+    /// 一键补齐全库：串行补，逐个回调进度
+    func enrichAll(progress: @escaping (Int, Int) -> Void) async {
+        let targets = songs.filter { needsEnrich($0) }
+        let total = targets.count
+        for (i, s) in targets.enumerated() {
+            await enrichMissing(s.id)
+            progress(i + 1, total)
+        }
     }
 
     static func stableHash(_ s: String) -> String {

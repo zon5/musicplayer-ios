@@ -10,8 +10,18 @@ struct LibraryView: View {
     @State private var showPlayer = false
     @State private var showImporter = false
     @State private var showSettings = false
+    @State private var showSearch = false
+    @State private var showQueue = false
+    @State private var menuSong: Song? = nil
+    @State private var editSong: Song? = nil
     @State private var tab = 0 // 0 歌曲 / 1 歌手
     @State private var importError: String?
+    // ⚠️ 分组/歌手列表必须缓存：player.position 每帧变化会让整个 body 重算，
+    // 若在这里现算 sorted 会把全库重排 N 次/秒 —— 这是首页卡顿的真凶。
+    @State private var cachedGroups: [Group2] = []
+    @State private var cachedArtists: [Artist] = []
+    /// 跨 A-Z 分组震动：记录上一个可见首字母，变化且非首次时给一次轻震
+    @State private var lastHapticLetter: String? = nil
 
     private var importTypes: [UTType] {
         var types: [UTType] = [.audio]
@@ -51,8 +61,39 @@ struct LibraryView: View {
             Alert(title: Text("导入失败"), message: Text(importError ?? ""), dismissButton: .default(Text("好")))
         }
         .sheet(isPresented: $showSettings) {
-            SettingsView().environmentObject(settings).environmentObject(player)
+            SettingsView().environmentObject(settings).environmentObject(player).environmentObject(library)
         }
+        .sheet(isPresented: $showSearch) {
+            SearchView().environmentObject(library).environmentObject(player)
+        }
+        .sheet(isPresented: $showQueue) {
+            QueueView().environmentObject(player).environmentObject(library)
+        }
+        .sheet(item: $menuSong) { s in
+            SongMenu(song: s, onEdit: { editSong = $0 })
+                .environmentObject(library).environmentObject(player)
+        }
+        .sheet(item: $editSong) { s in
+            EditMetaView(song: s).environmentObject(library)
+        }
+        .onAppear { rebuildCaches() }
+        .onChange(of: library.songs) { _ in rebuildCaches() }
+    }
+
+    /// 只在曲库真正变化时重排一次，避免 position 每帧触发 body 时反复全库排序
+    private func rebuildCaches() {
+        let sorted = library.songs.sorted { displayFirst($0) < displayFirst($1) }
+        var map: [String: [Song]] = [:]
+        for s in sorted { map[displayFirst(s), default: []].append(s) }
+        cachedGroups = map.keys.sorted().map { Group2(letter: $0, songs: map[$0]!) }
+
+        var amap: [String: (Int, Song)] = [:]
+        for s in library.songs {
+            let n = s.displayArtist
+            if let e = amap[n] { amap[n] = (e.0 + 1, e.1) } else { amap[n] = (1, s) }
+        }
+        cachedArtists = amap.map { Artist(name: $0.key, count: $0.value.0, song: $0.value.1) }
+            .sorted { $0.name < $1.name }
     }
 
     // MARK: 顶部标题带（浅主题色）
@@ -67,6 +108,18 @@ struct LibraryView: View {
                     .foregroundColor(.black.opacity(0.5))
             }
             Spacer()
+            Button { showSearch = true } label: {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 16))
+                    .foregroundColor(.black.opacity(0.7))
+                    .frame(width: 38, height: 38)
+            }
+            Button { showQueue = true } label: {
+                Image(systemName: "list.bullet")
+                    .font(.system(size: 16))
+                    .foregroundColor(.black.opacity(0.7))
+                    .frame(width: 38, height: 38)
+            }
             Button { library.syncSystemLibrary() } label: {
                 Image(systemName: "arrow.triangle.2.circlepath")
                     .font(.system(size: 16))
@@ -127,7 +180,7 @@ struct LibraryView: View {
             else {
                 ScrollView(showsIndicators: false) {
                     LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-                        ForEach(grouped, id: \.letter) { group in
+                        ForEach(cachedGroups, id: \.letter) { group in
                             Section(header: letterHeader(group.letter)) {
                                 ForEach(group.songs) { song in
                                     songRow(song)
@@ -142,17 +195,6 @@ struct LibraryView: View {
     }
 
     private struct Group2 { let letter: String; let songs: [Song] }
-    private var grouped: [Group2] {
-        let sorted = library.songs.sorted { a, b in
-            displayFirst(a) < displayFirst(b)
-        }
-        var map: [String: [Song]] = [:]
-        for s in sorted {
-            let key = displayFirst(s)
-            map[key, default: []].append(s)
-        }
-        return map.keys.sorted().map { Group2(letter: $0, songs: map[$0]!) }
-    }
     private func displayFirst(_ s: Song) -> String {
         let t = s.displayTitle.uppercased()
         guard let c = t.first else { return "#" }
@@ -167,6 +209,11 @@ struct LibraryView: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 5)
             .background(Theme.bg)
+            .onAppear {
+                guard settings.hapticsOn else { return }
+                if let last = lastHapticLetter, last != letter { Haptics.soft() }
+                lastHapticLetter = letter
+            }
     }
     private func songRow(_ song: Song) -> some View {
         let isCurrent = player.current?.id == song.id
@@ -203,12 +250,16 @@ struct LibraryView: View {
         .padding(.vertical, 7)
         .contentShape(Rectangle())
         .onTapGesture {
-            if let idx = library.songs.firstIndex(of: song) {
+            if settings.tapAction == 1 {
+                // 下一首插播：不动正在播放的歌
+                player.playNext(song)
+            } else if let idx = library.songs.firstIndex(of: song) {
                 player.play(library.songs, at: idx)
             }
             showPlayer = true
             triggerEnrich(song)
         }
+        .onLongPressGesture(minimumDuration: 0.4) { menuSong = song }
     }
 
     /// 右侧「词：X / 曲：X / 2024.05」三行小块。三项都缺就不画。
@@ -252,11 +303,11 @@ struct LibraryView: View {
     // MARK: 歌手列表
     private var artistList: some View {
         Group {
-            if artists.isEmpty { emptyState }
+            if cachedArtists.isEmpty { emptyState }
             else {
                 ScrollView(showsIndicators: false) {
                     LazyVStack(spacing: 0) {
-                        ForEach(artists, id: \.name) { a in
+                        ForEach(cachedArtists, id: \.name) { a in
                             HStack(spacing: 12) {
                                 ArtworkView(song: a.song, size: 46)
                                     .clipShape(Circle())
@@ -285,16 +336,6 @@ struct LibraryView: View {
         }
     }
     private struct Artist { let name: String; let count: Int; let song: Song }
-    private var artists: [Artist] {
-        var map: [String: (Int, Song)] = [:]
-        for s in library.songs {
-            let n = s.displayArtist
-            if let e = map[n] { map[n] = (e.0 + 1, e.1) }
-            else { map[n] = (1, s) }
-        }
-        return map.map { Artist(name: $0.key, count: $0.value.0, song: $0.value.1) }
-            .sorted { $0.name < $1.name }
-    }
 
     private var emptyState: some View {
         VStack(spacing: 14) {

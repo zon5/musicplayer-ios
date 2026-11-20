@@ -45,6 +45,22 @@ final class SettingsStore: ObservableObject {
     /// 氛围画框开关
     @Published var atmosOn: Bool = true { didSet { save() } }
 
+    /// 歌词字号倍率 0.8~1.6
+    @Published var lyricFontScale: Float = 1.0 { didSet { save() } }
+    /// 滚动列表震动反馈
+    @Published var hapticsOn: Bool = true { didSet { save() } }
+    /// 睡眠定时：距离停止的分钟数，0=关闭
+    @Published var sleepMinutes: Int = 0 { didSet { save() } }
+    /// 睡眠定时器到期时"放完当前曲再停"
+    @Published var sleepFinishSong: Bool = false { didSet { save() } }
+    /// 主题模式 0=跟随系统 1=浅色 2=深色
+    @Published var themeMode: Int = 2 { didSet { save() } }
+    /// 点歌方式 0=立即播放 1=下一首插播
+    @Published var tapAction: Int = 0 { didSet { save() } }
+    /// 沉浸式播放（串烧）：播到设定比例就淡出切下一首，0=关闭
+    @Published var immersiveOn: Bool = false { didSet { save() } }
+    @Published var immersiveRatio: Float = 0.65 { didSet { save() } }
+
     private let d = UserDefaults.standard
     private let kPrefix = "mplayer.settings."
 
@@ -62,6 +78,14 @@ final class SettingsStore: ObservableObject {
         crossfadeOn = bool("crossfadeOn", false)
         crossfadeSec = float("crossfadeSec", 4).clamped(1...12)
         atmosOn = bool("atmosOn", true)
+        lyricFontScale = float("lyricFontScale", 1.0).clamped(0.8...1.6)
+        hapticsOn = bool("hapticsOn", true)
+        sleepMinutes = int("sleepMinutes", 0)
+        sleepFinishSong = bool("sleepFinishSong", false)
+        themeMode = int("themeMode", 2).clamped(0...2)
+        tapAction = int("tapAction", 0).clamped(0...1)
+        immersiveOn = bool("immersiveOn", false)
+        immersiveRatio = float("immersiveRatio", 0.65).clamped(0.3...0.95)
     }
 
     private func save() {
@@ -75,6 +99,14 @@ final class SettingsStore: ObservableObject {
         d.set(crossfadeOn, forKey: k("crossfadeOn"))
         d.set(crossfadeSec, forKey: k("crossfadeSec"))
         d.set(atmosOn, forKey: k("atmosOn"))
+        d.set(lyricFontScale, forKey: k("lyricFontScale"))
+        d.set(hapticsOn, forKey: k("hapticsOn"))
+        d.set(sleepMinutes, forKey: k("sleepMinutes"))
+        d.set(sleepFinishSong, forKey: k("sleepFinishSong"))
+        d.set(themeMode, forKey: k("themeMode"))
+        d.set(tapAction, forKey: k("tapAction"))
+        d.set(immersiveOn, forKey: k("immersiveOn"))
+        d.set(immersiveRatio, forKey: k("immersiveRatio"))
     }
 
     func applyPreset(_ index: Int) {

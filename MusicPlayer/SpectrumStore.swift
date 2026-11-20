@@ -187,10 +187,15 @@ final class SpectrumStore: ObservableObject {
         }
     }
 
+    /// 是否正在播放：暂停时不发布 levels，避免频谱柱无谓重绘拖慢界面
+    var playing = false
+
     private func startTimer() {
         guard timer == nil else { return }
-        timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+        // 0.08s≈12fps，视觉上足够，比 20fps 少四成重绘
+        timer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
             guard let self = self else { return }
+            guard self.playing else { return }
             if self.simulate {
                 // 平滑动态兜底：多组不同相位的正弦叠加，低频高、高频低，看着像真频谱
                 let t = Date().timeIntervalSinceReferenceDate

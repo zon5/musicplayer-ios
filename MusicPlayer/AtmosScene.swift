@@ -285,6 +285,8 @@ final class SceneClock: ObservableObject {
     func start() {
         guard link == nil else { return }
         link = CADisplayLink(target: self, selector: #selector(tick(_:)))
+        // 30fps 足够表现云/雨/水波，60fps 会让整个 Canvas 每帧全量重绘拖慢整机
+        link?.preferredFramesPerSecond = 30
         link?.add(to: .main, forMode: .common)
         last = 0
     }

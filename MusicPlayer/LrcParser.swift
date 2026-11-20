@@ -65,9 +65,30 @@ enum LrcParser {
         // 联网补词落盘的固定命名：即使 player 手里的 Song 副本没刷新也能读到
         candidates.append(LibraryStore.documents.appendingPathComponent("net_" + LibraryStore.stableHash(song.id) + ".lrc"))
         for url in candidates where FileManager.default.fileExists(atPath: url.path) {
-            if let raw = readText(url) { return parse(raw) }
+            if let raw = readText(url) {
+                // 同名 .tlyric / net_*.tlyric 译文，按时间合并
+                var trans: String? = nil
+                let tName = (url.lastPathComponent as NSString).deletingPathExtension + ".tlyric"
+                let tURL = LibraryStore.documents.appendingPathComponent(tName)
+                if FileManager.default.fileExists(atPath: tURL.path) { trans = readText(tURL) }
+                return parseBilingual(raw, translation: trans)
+            }
         }
         return []
+    }
+
+    /// 读一首歌的歌词原文（编辑页用）
+    static func rawText(for song: Song) -> String? {
+        var candidates: [URL] = []
+        if let name = song.lrcName {
+            candidates.append(LibraryStore.documents.appendingPathComponent(name))
+        }
+        let base = (song.fileName as NSString).deletingPathExtension
+        candidates.append(LibraryStore.documents.appendingPathComponent(base + ".lrc"))
+        for url in candidates where FileManager.default.fileExists(atPath: url.path) {
+            if let raw = readText(url) { return raw }
+        }
+        return nil
     }
 
     /// 当前进度对应的行号；未到第一句返回 -1（dock 会退回首句）
@@ -75,5 +96,28 @@ enum LrcParser {
         var idx = -1
         for (i, line) in lines.enumerated() where line.time <= t + 0.15 { idx = i }
         return idx
+    }
+
+    /// 解析带翻译的双语歌词：stripped 主歌词行 + tlyric 译文行，按时间对齐。
+    /// 网易云的 lrc 里译文在 [offset:...] 之后可能出现的 "[00:12.34]译文" 形式，
+    /// 这里把两段拼在一起解析，同一时间戳的译文填进 LrcLine.translation。
+    static func parseBilingual(_ main: String, translation: String?) -> [LrcLine] {
+        var lines = parse(main)
+        guard let tr = translation, !tr.isEmpty else { return lines }
+        let transLines = parse(tr)
+        // 用 0.2s 容差按时间就近匹配
+        var used = Set<Int>()
+        for t in transLines where !t.text.isEmpty {
+            var best = -1, bestD = 0.25
+            for (i, l) in lines.enumerated() where !used.contains(i) {
+                let d = abs(l.time - t.time)
+                if d < bestD { bestD = d; best = i }
+            }
+            if best >= 0, lines[best].translation == nil {
+                lines[best].translation = t.text
+                used.insert(best)
+            }
+        }
+        return lines
     }
 }

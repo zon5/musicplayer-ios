@@ -14,6 +14,7 @@ struct MetaHit {
 /// 联网补一首歌的结果：歌词原文 + 词曲署名 + 发行年月 + 封面地址
 struct SongMeta {
     var lrc: String?
+    var tlyric: String?
     var writerLyric: String?
     var writerMusic: String?
     var releaseYm: String?
@@ -21,7 +22,7 @@ struct SongMeta {
     var matchedID: Int64?
 
     var isEmpty: Bool {
-        lrc == nil && writerLyric == nil && writerMusic == nil && releaseYm == nil && coverUrl == nil
+        lrc == nil && tlyric == nil && writerLyric == nil && writerMusic == nil && releaseYm == nil && coverUrl == nil
     }
 }
 
@@ -87,15 +88,17 @@ final class MetaFetcher {
 
     // MARK: 歌词
 
-    func lyric(_ id: Int64) async -> String? {
-        guard id > 0 else { return nil }
+    func lyric(_ id: Int64) async -> (main: String?, trans: String?) {
+        guard id > 0 else { return (nil, nil) }
         let u = "https://music.163.com/api/song/lyric?id=\(id)&lv=1&kv=1&tv=-1"
-        guard let root = await getJSON(u) else { return nil }
+        guard let root = await getJSON(u) else { return (nil, nil) }
         func read(_ key: String) -> String? {
             guard let box = root[key] as? [String: Any] else { return nil }
             return box["lyric"] as? String
         }
-        return read("lrc") ?? read("klyric")
+        let main = read("lrc") ?? read("klyric")
+        let trans = read("tlyric")
+        return (main, (trans?.isEmpty ?? true) ? nil : trans)
     }
 
     // MARK: 详情（发行年月 + 封面）
@@ -180,11 +183,13 @@ final class MetaFetcher {
                                                       hit: $0) }) ?? hits.first else {
             return SongMeta()
         }
-        let lrcText = await lyric(hit.id)
+        let lyr = await lyric(hit.id)
+        let lrcText = lyr.main
         let d = await detail(hit.id)
         let credits = Self.credits(lrcText)
         return SongMeta(
             lrc: lrcText,
+            tlyric: lyr.trans,
             writerLyric: credits.lyric,
             writerMusic: credits.music,
             releaseYm: d.releaseYm,

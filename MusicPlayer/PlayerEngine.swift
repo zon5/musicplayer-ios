@@ -37,6 +37,9 @@ final class PlayerEngine: NSObject, ObservableObject {
     private var endObserver: NSObjectProtocol?
     private var durationObs: NSKeyValueObservation?
     private var statusObs: NSKeyValueObservation?
+    private var sleepTimer: Timer?
+    private var sleepDeadline: Date?
+    private var sleepArmed = false
 
     override init() {
         super.init()
@@ -172,6 +175,71 @@ final class PlayerEngine: NSObject, ObservableObject {
         } else {
             seek(to: 0)
         }
+    }
+
+    // MARK: - 队列操作（对齐安卓 QueueScreen：查看/插播/移除/排序/跳播）
+
+    /// 当前播放队列的只读快照（含 index），供队列面板显示
+    var queueSnapshot: ([Song], Int) { (queue, index) }
+
+    /// 下一首播放（插播）：把这首歌放到当前曲之后，不动正在播的曲子
+    func playNext(_ song: Song) {
+        guard queue.indices.contains(index) else {
+            // 队列为空：直接起播这一首
+            play([song], at: 0)
+            return
+        }
+        let insertAt = index + 1
+        if let exist = queue.firstIndex(where: { $0.id == song.id }) {
+            if exist == insertAt { return }
+            queue.remove(at: exist)
+            let adj = exist < insertAt ? insertAt - 1 : insertAt
+            queue.insert(song, at: min(adj, queue.count))
+        } else {
+            queue.insert(song, at: min(insertAt, queue.count))
+        }
+    }
+
+    /// 立即播放单曲：若已在队列里跳过去，否则插到当前曲之后并跳过去
+    func playSong(_ song: Song, from allSongs: [Song]? = nil) {
+        if let qi = queue.firstIndex(where: { $0.id == song.id }) {
+            index = qi
+            loadCurrent(autoPlay: true)
+            return
+        }
+        if let all = allSongs, let ai = all.firstIndex(where: { $0.id == song.id }) {
+            play(all, at: ai)
+        } else {
+            play([song], at: 0)
+        }
+    }
+
+    /// 跳到队列中的某一首
+    func jumpToQueue(at i: Int) {
+        guard queue.indices.contains(i) else { return }
+        index = i
+        loadCurrent(autoPlay: true)
+    }
+
+    /// 从队列移除（不能移除当前曲）
+    func removeFromQueue(at i: Int) {
+        guard queue.indices.contains(i), i != index else { return }
+        queue.remove(at: i)
+        if i < index { index -= 1 }
+    }
+
+    /// 队列内拖动排序
+    func moveInQueue(from: Int, to: Int) {
+        guard queue.indices.contains(from), queue.indices.contains(to), from != index, to != index else { return }
+        let s = queue.remove(at: from)
+        queue.insert(s, at: to)
+        if from == index { index = to } // 防御：正常被 guard 挡掉
+    }
+
+    func clearQueue() {
+        guard let cur = current else { return }
+        queue = [cur]
+        index = 0
     }
 
     /// 智能过渡开关/时长变化时调用，仅对 AVPlayer 后端生效（两套后端同时交叉淡化会互相抢输出）
@@ -310,16 +378,65 @@ final class PlayerEngine: NSObject, ObservableObject {
 
     private func startTicker() {
         stopTicker()
-        ticker = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+        SpectrumStore.shared.playing = true
+        // 0.5s 足够驱动进度条/歌词/信息坞；过快会让整个 SwiftUI 视图树反复重算导致卡顿
+        ticker = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             guard let self = self, self.isPlaying else { return }
             let t = self.useEffects ? self.effects.currentTime : (self.player?.currentTime().seconds ?? 0)
-            if t.isFinite { self.position = t }
+            guard t.isFinite else { return }
+            self.position = t
+            guard let s = self.settings else { return }
+            // 睡眠定时器：到点后暂停（或放完当前曲再停）
+            self.checkSleep(s)
+            // 沉浸式播放（串烧）：播到设定比例就淡出切下一首
+            if s.immersiveOn, self.duration > 1,
+               t >= self.duration * Double(s.immersiveRatio) {
+                self.crossfadeToNext()
+            }
         }
+    }
+
+    // MARK: 睡眠定时
+
+    private var lastSleepMinutes: Int = -1
+
+    private func checkSleep(_ s: SettingsStore) {
+        // 检测到用户改了定时分钟数 → 重新布防
+        if s.sleepMinutes != lastSleepMinutes {
+            lastSleepMinutes = s.sleepMinutes
+            sleepTimer?.invalidate(); sleepTimer = nil
+            sleepArmed = false
+            if s.sleepMinutes > 0 {
+                sleepDeadline = Date().addingTimeInterval(Double(s.sleepMinutes) * 60)
+                sleepArmed = true
+            } else {
+                sleepDeadline = nil
+            }
+        }
+        guard sleepArmed, let deadline = sleepDeadline, Date() >= deadline else { return }
+        // 到点了
+        sleepArmed = false
+        sleepDeadline = nil
+        if s.sleepFinishSong {
+            // 放完当前曲再停：标记，等 endObserver 触发 next 时暂停
+            sleepTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.checkSleepFinish() }
+        } else {
+            DispatchQueue.main.async { self.togglePlay() }
+        }
+    }
+
+    @objc private func checkSleepFinish() {
+        // 曲子结束会自动 next() 切歌；这里在切歌后的一刻暂停
+        // 通过检测 position 回退到接近 0 判断"刚切歌"
+        guard position < 1.0 else { return }
+        sleepTimer?.invalidate(); sleepTimer = nil
+        DispatchQueue.main.async { if self.isPlaying { self.togglePlay() } }
     }
 
     private func stopTicker() {
         ticker?.invalidate()
         ticker = nil
+        SpectrumStore.shared.playing = false
     }
 
     // MARK: - 锁屏 / 控制中心

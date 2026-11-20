@@ -64,6 +64,7 @@ enum SongTitle {
 struct LrcLine {
     let time: Double
     let text: String
+    var translation: String? = nil
 }
 
 /// 某首歌的歌词/词曲/年月被后台补全后发出，object 是 song.id

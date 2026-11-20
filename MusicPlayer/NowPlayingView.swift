@@ -4,6 +4,7 @@ import UIKit
 struct NowPlayingView: View {
     @EnvironmentObject var player: PlayerEngine
     @EnvironmentObject var settings: SettingsStore
+    @EnvironmentObject var library: LibraryStore
     @Environment(\.dismiss) private var dismiss
 
     // 封面 = 0，歌词 = 1（和安卓一致：横向 Pager 两页）
@@ -11,6 +12,8 @@ struct NowPlayingView: View {
     @State private var scrubbing = false
     @State private var scrubValue: Double = 0
     @State private var dragOffset: CGFloat = 0
+    @State private var showQueue = false
+    @State private var showImmersive = false
 
     var body: some View {
         GeometryReader { geo in
@@ -52,6 +55,9 @@ struct NowPlayingView: View {
             }
         }
         .statusBar(hidden: false)
+        .sheet(isPresented: $showQueue) {
+            QueueView().environmentObject(player).environmentObject(library)
+        }
     }
 
     // MARK: - 封面页：正方形专辑封面（安卓封面页是 1:1 album art，不是画框）
@@ -96,15 +102,18 @@ struct NowPlayingView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    // MARK: - 背景：深色纯色 + 极淡氛围烘托（安卓整屏是纯色，画框只在中间）
+    // MARK: - 背景：静态渐变（安卓整屏也是纯色，画框只在中间）。
+    // ⚠️ 这里绝不能放 AtmosScene + blur(radius:40)：整屏高斯模糊叠加 30fps Canvas 会拖垮整机。
     private var background: some View {
         ZStack {
             Theme.bg.ignoresSafeArea()
-            if settings.atmosOn, let song = player.current {
-                AtmosScene(title: song.displayTitle, playing: player.isPlaying, animated: false)
-                    .ignoresSafeArea()
-                    .blur(radius: 40)
-                    .opacity(0.22)
+            if settings.atmosOn {
+                // 只取静态配色做一层柔和渐变烘托，不启动动画时钟、不做高斯模糊
+                LinearGradient(
+                    colors: [Theme.accent.opacity(0.20), Theme.accent.opacity(0.06), Color.clear],
+                    startPoint: .top, endPoint: .bottom
+                )
+                .ignoresSafeArea()
             }
             LinearGradient(
                 colors: [Color.black.opacity(0.30), Color.black.opacity(0.08), Color.black.opacity(0.55)],
@@ -143,12 +152,26 @@ struct NowPlayingView: View {
                 }
             }
             Spacer()
-            Image(systemName: "music.note.list")
-                .font(.system(size: 17))
-                .foregroundColor(Theme.text3)
-                .frame(width: 44, height: 44)
+            HStack(spacing: 0) {
+                // 沉浸式播放（串烧）开关：对齐安卓顶部 GraphicEq 按钮
+                Button { showImmersive.toggle() } label: {
+                    Image(systemName: "infinity")
+                        .font(.system(size: 17))
+                        .foregroundColor(settings.immersiveOn ? Theme.accent : Theme.text3)
+                        .frame(width: 40, height: 44)
+                }
+                Button { showQueue = true } label: {
+                    Image(systemName: "music.note.list")
+                        .font(.system(size: 17))
+                        .foregroundColor(Theme.text2)
+                        .frame(width: 40, height: 44)
+                }
+            }
         }
         .frame(height: 48)
+        .sheet(isPresented: $showImmersive) {
+            ImmersiveView().environmentObject(settings)
+        }
     }
 
     private var infoBlock: some View {
@@ -162,6 +185,12 @@ struct NowPlayingView: View {
                 .font(.system(size: 13))
                 .foregroundColor(Theme.text2)
                 .lineLimit(1)
+            if let album = player.current?.album, !album.isEmpty {
+                Text(album)
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.text3)
+                    .lineLimit(1)
+            }
         }
         .padding(.top, 10)
         .padding(.bottom, 12)
