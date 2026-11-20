@@ -249,7 +249,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         let half = TimeInterval(max(1, settings?.crossfadeSec ?? 4) / 2)
         if useEffects {
             effects.fade(to: 0, duration: half) { [weak self] in
-                self?.effects.setVolume(1)
+                self?.effects.volume = 1
                 self?.next()
             }
         } else if let p = player {

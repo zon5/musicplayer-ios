@@ -8,10 +8,10 @@ import UIKit
 // 绘制用 SwiftUI Canvas，七种地貌 + 四时段配色 + 天气 + 天体 + 少量物件。
 // ============================================================================
 
-private enum World: Int, CaseIterable { case mountains, sea, city, forest, field, desert, lake }
-private enum Phase: Int, CaseIterable { case dawn, day, dusk, night }
-private enum Precip: Int, CaseIterable { case none, rain, snow }
-private enum Mood: Int, CaseIterable { case neutral, sad, happy, love, calm, epic }
+enum World: Int, CaseIterable { case mountains, sea, city, forest, field, desert, lake }
+enum Phase: Int, CaseIterable { case dawn, day, dusk, night }
+enum Precip: Int, CaseIterable { case none, rain, snow }
+enum Mood: Int, CaseIterable { case neutral, sad, happy, love, calm, epic }
 
 /// 稳定随机（L CG），同一 seed 每次得到同一序列
 private struct Rng: RandomNumberGenerator {
@@ -107,12 +107,15 @@ private func hsl(_ h: Float, _ s: Float, _ l: Float) -> Color {
 
 private func lerp(_ a: Color, _ b: Color, _ t: Float) -> Color {
     let k = Double(max(0, min(1, t)))
-    return Color(
-        red: Double(a.redValue) + (Double(b.redValue) - Double(a.redValue)) * k,
-        green: Double(a.greenValue) + (Double(b.greenValue) - Double(a.greenValue)) * k,
-        blue: Double(a.blueValue) + (Double(b.blueValue) - Double(a.blueValue)) * k,
-        opacity: Double(a.opacity) + (Double(b.opacity) - Double(a.opacity)) * k
-    )
+    let r0 = Double(a.redValue), r1 = Double(b.redValue)
+    let g0 = Double(a.greenValue), g1 = Double(b.greenValue)
+    let b0 = Double(a.blueValue), b1 = Double(b.blueValue)
+    let a0 = Double(a.opacity), a1 = Double(b.opacity)
+    let rr = r0 + (r1 - r0) * k
+    let gg = g0 + (g1 - g0) * k
+    let bb = b0 + (b1 - b0) * k
+    let aa = a0 + (a1 - a0) * k
+    return Color(red: rr, green: gg, blue: bb, opacity: aa)
 }
 
 private extension Color {
@@ -334,7 +337,7 @@ struct AtmosScene: View {
         let cloudCount = 3 + Int(s.cloudCover * 4)
         for _ in 0..<cloudCount {
             let baseX = rnd.float() * Float(w)
-            let baseY = rnd.float() * hz * 0.62
+            let baseY = rnd.float() * Float(hz) * 0.62
             let cw = CGFloat(0.14 + rnd.float() * 0.22) * w
             let ch = CGFloat(0.03 + rnd.float() * 0.05) * h
             let drift = CGFloat(sin(ts * 0.05 + baseX) * s.wind * 12)
@@ -454,7 +457,7 @@ struct AtmosScene: View {
             let by = hz + CGFloat(rnd.float()) * (h - hz)
             let len = CGFloat(0.02 + rnd.float() * 0.06) * w
             let phase = (t * sp + Float(by) * 0.05).truncatingRemainder(dividingBy: 40)
-            let x = CGFloat(bx) + phase.truncatingRemainder(dividingBy: 2) - 1
+            let x = CGFloat(bx) + CGFloat(phase.truncatingRemainder(dividingBy: 2)) - 1
             let shimmer = 0.25 + 0.35 * abs(sin(t * 0.8 + Float(bx)))
             g.stroke(Path { p in
                 p.move(to: CGPoint(x: x, y: by))
@@ -503,7 +506,7 @@ struct AtmosScene: View {
                 }
             }
             x += bw
-            if rnd.float() < 0.30 { x += w * (0.012 + rnd.float() * 0.012) }
+            if rnd.float() < 0.30 { x += w * CGFloat(0.012 + rnd.float() * 0.012) }
         }
     }
 
@@ -621,7 +624,7 @@ struct AtmosScene: View {
             : lerp(s.groundNear, Color.black, 0.35)
         for _ in 0..<count {
             let bx = rnd.float() * Float(w)
-            let by = rnd.float() * h * 0.35
+            let by = rnd.float() * Float(h) * 0.35
             let drift = CGFloat(sin(t * 0.2 + Float(bx)) * 14)
             let x = CGFloat(bx) + drift
             let flap = 3 + 2 * sin(t * 2.4 + Float(bx))

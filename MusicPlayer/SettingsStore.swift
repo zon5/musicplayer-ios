@@ -51,9 +51,9 @@ final class SettingsStore: ObservableObject {
     init() { load() }
 
     private func load() {
-        accentIndex = int("accentIndex", 0).clamped(0..<Self.accentColors.count)
+        accentIndex = int("accentIndex", 0).clamped(0...(Self.accentColors.count - 1))
         eqEnabled = bool("eqEnabled", false)
-        eqPreset = int("eqPreset", 0).clamped(0..<Self.eqPresetNames.count)
+        eqPreset = int("eqPreset", 0).clamped(0...(Self.eqPresetNames.count - 1))
         let stored = array("eqBands")
         eqBands = stored.count == 7 ? stored : Self.eqPresetBands[0]
         bassDb = float("bassDb", 0).clamped(-12...12)

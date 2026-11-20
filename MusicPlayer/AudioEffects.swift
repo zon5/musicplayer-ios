@@ -71,7 +71,7 @@ final class AudioEffects {
         guard let f = try? AVAudioFile(forReading: url) else { onFinished(); return }
         file = f
         sampleRate = f.processingFormat.sampleRate
-        duration = f.length / Int64(sampleRate)
+        duration = Double(f.length) / sampleRate
         apply(settings: settings)
 
         playerNode.scheduleFile(f, at: nil) { [weak self] in
