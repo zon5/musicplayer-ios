@@ -309,8 +309,9 @@ struct AtmosScene: View {
 
     var body: some View {
         // ⚠️ 用 TimelineView(.animation) 每帧重建视图，Canvas 才会真的重绘（这是「图框动起来」的关键）。
-        // 暂停时 clock 不推进 → t 不变 → 画面定格在当前帧（虽然每帧重建但内容相同）。
-        TimelineView(.animation) { ctx in
+        // minimumInterval 1/30：封顶 30fps，够表现云飘/雨落，又比 60fps 省一半 CPU；
+        // paused: 暂停时完全不刷新（冻结在当前帧），避免空转耗电/发热。
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !(animated && playing))) { ctx in
             let t = clock.advance(to: ctx.date, playing: animated && playing)
             Canvas { g, size in
                 drawScene(g: g, w: size.width, h: size.height, s: spec, t: t)

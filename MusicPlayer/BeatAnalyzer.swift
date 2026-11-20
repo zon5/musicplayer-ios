@@ -85,7 +85,7 @@ final class BeatAnalyzer {
             if i == 0 {
                 let rms = sqrt(env.totalSq / Double(max(1, env.totalN)))
                 rmsDb = Float(max(1e-5, min(1, rms)))
-                rmsDb = 20 * log10(rmsDb)
+                rmsDb = Float(20.0 * log10(Double(rmsDb)))
             }
             let o = onsetStrength(env)
             guard let t = bestTempo(o, env.count) else { continue }
@@ -131,9 +131,10 @@ final class BeatAnalyzer {
             jj += 1; kk += lag
         }
 
-        let conf = (agree * min(max(best.t.peakRatio, 0.6), 2.5) / 2.5).clamped(0...1)
+        let rawConf: Float = agree * min(max(best.t.peakRatio, 0.6), 2.5) / 2.5
+        let conf: Float = max(0, min(1, rawConf))
 
-        var outBpm = medBpm
+        var outBpm = Float(medBpm)
         if wins.count >= 2 && agree < 0.5 {
             if best.t.peakRatio < STRONG_PEAK_RATIO { return nil }
             outBpm = octaveFold(best.t.bpm)
@@ -160,7 +161,8 @@ final class BeatAnalyzer {
         let readFrames = AVAudioFrameCount(min(Int64(f.length) - startFrame, winFrames))
         guard readFrames > 0, let buf = AVAudioPCMBuffer(pcmFormat: f.processingFormat, frameCapacity: readFrames) else { return nil }
         do {
-            try f.seek(to: startFrame)
+            // AVAudioFile 没有 seek，直接设 framePosition 再读
+            f.framePosition = startFrame
             try f.read(into: buf, frameCount: readFrames)
         } catch { return nil }
 
@@ -203,7 +205,7 @@ final class BeatAnalyzer {
         }
         if peak > 0 {
             let g: Float = 8 / peak
-            for i in 0..<n { o[i] = log(1 + o[i] * g) }
+            for i in 0..<n { o[i] = Float(log(1.0 + Double(o[i] * g))) }
         }
         return o
     }
@@ -251,8 +253,4 @@ final class BeatAnalyzer {
         while b >= 140 && guard1 < 16 { b /= 2; guard1 += 1 }
         return b
     }
-}
-
-private extension Comparable {
-    func clamped(_ lo: Self, _ hi: Self) -> Self { min(max(self, lo), hi) }
 }

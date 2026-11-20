@@ -85,7 +85,7 @@ enum AutoMixer {
 
         // 5) 响度补偿（±5dB 内）
         let gainB: Float = (a.rmsDb > -60 && b.rmsDb > -60)
-            ? max(0.5, min(1.8, pow(10, (a.rmsDb - b.rmsDb) / 20))) : 1
+            ? Float(max(0.5, min(1.8, pow(10.0, Double(a.rmsDb - b.rmsDb) / 20.0)))) : 1
 
         var label = ""
         if beatMatched {
