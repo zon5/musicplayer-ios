@@ -11,7 +11,10 @@ struct MusicPlayerApp: App {
                 .environmentObject(library)
                 .environmentObject(player)
                 .preferredColorScheme(.dark)
-                .onAppear { library.rescan() }
+                .onAppear {
+                    library.rescan()
+                    library.syncSystemLibrary()
+                }
         }
     }
 }

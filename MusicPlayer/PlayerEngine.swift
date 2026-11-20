@@ -17,22 +17,23 @@ final class PlayerEngine: NSObject, ObservableObject {
         didSet {
             if oldValue != shuffle, let cur = current {
                 let rest = queue.filter { $0.id != cur.id }
-                if shuffle {
-                    queue = [cur] + rest.shuffled()
-                    index = 0
-                } else {
-                    queue = [cur] + rest
-                    index = 0
-                }
+                queue = [cur] + (shuffle ? rest.shuffled() : rest)
+                index = 0
             }
         }
     }
 
-    private var audio: AVAudioPlayer?
+    // AVPlayer 既支持沙盒文件，也支持系统音乐库的 ipod-library:// 地址；
+    // 旧版用 AVAudioPlayer 只能播本地文件，读不到系统库的歌。
+    private var player: AVPlayer?
     private var queue: [Song] = []
     private var index = 0
     private var ticker: Timer?
     private var attempts = 0
+
+    private var endObserver: NSObjectProtocol?
+    private var durationObs: NSKeyValueObservation?
+    private var statusObs: NSKeyValueObservation?
 
     override init() {
         super.init()
@@ -65,11 +66,11 @@ final class PlayerEngine: NSObject, ObservableObject {
     }
 
     func togglePlay() {
-        guard let p = audio else {
+        guard let p = player else {
             if !queue.isEmpty { loadCurrent() }
             return
         }
-        if p.isPlaying {
+        if isPlaying {
             p.pause()
             isPlaying = false
             stopTicker()
@@ -82,9 +83,9 @@ final class PlayerEngine: NSObject, ObservableObject {
     }
 
     func seek(to t: Double) {
-        guard let p = audio else { return }
+        guard player != nil else { return }
         let v = max(0, min(t, duration))
-        p.currentTime = v
+        player?.seek(to: CMTime(seconds: v, preferredTimescale: 600))
         position = v
         refreshNowPlaying()
     }
@@ -92,8 +93,8 @@ final class PlayerEngine: NSObject, ObservableObject {
     func next(auto: Bool = false) {
         guard !queue.isEmpty else { return }
         if auto, repeatMode == .one {
-            audio?.currentTime = 0
-            audio?.play()
+            player?.seek(to: .zero)
+            player?.play()
             isPlaying = true
             position = 0
             startTicker()
@@ -107,7 +108,7 @@ final class PlayerEngine: NSObject, ObservableObject {
             index = 0
             loadCurrent()
         } else {
-            audio?.stop()
+            teardownItem()
             isPlaying = false
             position = 0
             stopTicker()
@@ -131,41 +132,79 @@ final class PlayerEngine: NSObject, ObservableObject {
 
     // MARK: - 内部
 
+    private func teardownItem() {
+        player?.pause()
+        if let o = endObserver { NotificationCenter.default.removeObserver(o) }
+        endObserver = nil
+        durationObs = nil
+        statusObs = nil
+        player = nil
+    }
+
     private func loadCurrent() {
         guard queue.indices.contains(index) else { return }
         let song = queue[index]
-        audio?.stop()
-        do {
-            let p = try AVAudioPlayer(contentsOf: song.fileURL)
-            p.delegate = self
-            p.prepareToPlay()
-            guard p.play() else { return }
-            audio = p
-            current = song
-            duration = p.duration
-            position = 0
-            isPlaying = true
-            attempts = 0
-            startTicker()
-            refreshNowPlaying()
-        } catch {
-            // 文件坏了就跳过，最多绕队列一圈
-            attempts += 1
-            if attempts < queue.count {
-                index = (index + 1) % queue.count
-                loadCurrent()
-            } else {
-                attempts = 0
-                isPlaying = false
+        guard let url = song.playURL else {
+            skipFailed()
+            return
+        }
+        teardownItem()
+        stopTicker()
+
+        let item = AVPlayerItem(url: url)
+        let p = AVPlayer(playerItem: item)
+        player = p
+
+        // 曲子时长先用元数据里的值顶上（系统库/本地文件都有），加载完成后再校准
+        current = song
+        duration = song.duration
+        position = 0
+
+        endObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main
+        ) { [weak self] _ in
+            self?.next(auto: true)
+        }
+        durationObs = item.observe(\.duration, options: [.initial, .new]) { [weak self] it, _ in
+            let d = it.duration.seconds
+            if d.isFinite && d > 0 {
+                DispatchQueue.main.async { self?.duration = d }
             }
+        }
+        statusObs = item.observe(\.status, options: [.new]) { [weak self] it, _ in
+            if it.status == .failed {
+                DispatchQueue.main.async { self?.skipFailed() }
+            }
+        }
+
+        p.play()
+        isPlaying = true
+        attempts = 0
+        startTicker()
+        refreshNowPlaying()
+    }
+
+    /// 文件坏 / 授权失效 / 地址打不开时跳过，最多绕队列一圈，避免死循环
+    private func skipFailed() {
+        attempts += 1
+        if attempts < queue.count {
+            index = (index + 1) % queue.count
+            loadCurrent()
+        } else {
+            attempts = 0
+            teardownItem()
+            isPlaying = false
+            stopTicker()
+            refreshNowPlaying()
         }
     }
 
     private func startTicker() {
         stopTicker()
         ticker = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
-            guard let self = self, let p = self.audio, p.isPlaying else { return }
-            self.position = p.currentTime
+            guard let self = self, self.isPlaying, self.player != nil else { return }
+            let t = self.player?.currentTime().seconds ?? 0
+            if t.isFinite { self.position = t }
         }
     }
 
@@ -235,11 +274,5 @@ final class PlayerEngine: NSObject, ObservableObject {
         } else {
             try? AVAudioSession.sharedInstance().setActive(true)
         }
-    }
-}
-
-extension PlayerEngine: AVAudioPlayerDelegate {
-    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        next(auto: true)
     }
 }

@@ -10,9 +10,21 @@ struct Song: Identifiable, Codable, Equatable {
     var artworkName: String?
     var lrcName: String?
 
-    var id: String { fileName }
+    // 系统「音乐」App 同步进来的歌：systemID 非空，assetURL 是 ipod-library:// 地址
+    // 这两个字段是 Optional，旧版 library.json 缺这两个键也能正常解码（不会崩）
+    var systemID: String?
+    var assetURL: String?
+
+    var id: String { systemID ?? fileName }
+    var isSystem: Bool { systemID != nil }
 
     var fileURL: URL { LibraryStore.documents.appendingPathComponent(fileName) }
+
+    /// 真正的播放地址：系统库的歌走 ipod-library://，本地导入的走沙盒文件
+    var playURL: URL? {
+        if isSystem { return assetURL.flatMap { URL(string: $0) } }
+        return fileURL
+    }
 
     var displayTitle: String { SongTitle.clean(title.isEmpty ? fileName : title) }
 

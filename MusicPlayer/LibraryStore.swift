@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import UIKit
+import MediaPlayer
 
 final class LibraryStore: ObservableObject {
     static let documents: URL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -47,6 +48,69 @@ final class LibraryStore: ObservableObject {
         if changed { save() }
     }
 
+    /// 读取系统「音乐」App 里同步进来的歌（AMPod 能"识别"歌靠的就是这一步）。
+    /// 首次会弹系统授权框，用户点「允许」后把歌合并进曲库；已存在的按 systemID 去重。
+    func syncSystemLibrary() {
+        let status = MPMediaLibrary.authorizationStatus()
+        switch status {
+        case .authorized:
+            performSystemImport()
+        case .notDetermined:
+            MPMediaLibrary.requestAuthorization { [weak self] newStatus in
+                DispatchQueue.main.async {
+                    if newStatus == .authorized { self?.performSystemImport() }
+                }
+            }
+        case .denied, .restricted:
+            // 用户拒绝或受限：不打扰，仍可用"导入文件"那套
+            break
+        @unknown default:
+            break
+        }
+    }
+
+    private func performSystemImport() {
+        let query = MPMediaQuery.songs()
+        guard let items = query.items else { return }
+        var changed = false
+        for item in items {
+            // 过滤掉云端的、没有本地文件的、以及受保护无法播放的曲子
+            guard !item.isCloudItem,
+                  let url = item.assetURL,
+                  item.mediaType == .music else { continue }
+            let pid = String(item.persistentID)
+            if songs.contains(where: { $0.systemID == pid }) { continue }
+
+            var artName: String? = nil
+            if let art = item.artwork,
+               let img = art.image(at: CGSize(width: 320, height: 320)),
+               let data = img.jpegData(compressionQuality: 0.82) {
+                let n = "sys_" + Self.stableHash(pid) + ".jpg"
+                if (try? data.write(to: Self.artworkDir.appendingPathComponent(n))) != nil {
+                    artName = n
+                }
+            }
+
+            let song = Song(
+                fileName: "sys_\(pid).m4a",
+                title: item.title ?? "",
+                artist: item.artist ?? "",
+                album: item.albumTitle ?? "",
+                duration: item.duration,
+                addedAt: Date(),
+                artworkName: artName,
+                lrcName: nil,
+                systemID: pid,
+                assetURL: url.absoluteString
+            )
+            songs.append(song)
+            changed = true
+        }
+        if changed {
+            save()
+        }
+    }
+
     /// 从"文件"App / 其它 App 导入
     func importFiles(_ urls: [URL]) {
         importing = true
@@ -67,7 +131,10 @@ final class LibraryStore: ObservableObject {
     }
 
     func delete(_ song: Song) {
-        try? FileManager.default.removeItem(at: song.fileURL)
+        // 系统库的歌没有本地文件可删，只从显示列表移除；下次"读取系统音乐库"会再出现（符合预期，那是系统库里的歌）
+        if !song.isSystem {
+            try? FileManager.default.removeItem(at: song.fileURL)
+        }
         if let art = song.artworkName {
             try? FileManager.default.removeItem(at: Self.artworkDir.appendingPathComponent(art))
         }

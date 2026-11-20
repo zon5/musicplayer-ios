@@ -36,6 +36,13 @@ struct LibraryView: View {
             .navigationTitle("音乐库")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        library.syncSystemLibrary()
+                    } label: {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                    }
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         showImporter = true
@@ -107,7 +114,7 @@ struct LibraryView: View {
             Text("还没有歌曲")
                 .font(.system(size: 17, weight: .medium))
                 .foregroundColor(Theme.text2)
-            Text("点右上角 + 从「文件」导入，\n或把歌拖进「文件」App 里的「本地音乐」文件夹")
+            Text("打开时会问「允许访问音乐库」，点允许即可读出你同步的歌。\n如没弹出，点左上角 ↻ 重新读取；也可点右上角 + 从「文件」导入。")
                 .font(.system(size: 13))
                 .multilineTextAlignment(.center)
                 .foregroundColor(Theme.text3)
