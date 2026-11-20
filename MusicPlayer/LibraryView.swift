@@ -162,8 +162,8 @@ struct SongRow: View {
             Spacer(minLength: 8)
 
             if isCurrent {
-                Image(systemName: isPlaying ? "speaker.wave.2.fill" : "speaker.slash.fill")
-                    .font(.system(size: 13))
+                Image(systemName: isPlaying ? "waveform" : "play.fill")
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(Theme.accent)
             }
         }

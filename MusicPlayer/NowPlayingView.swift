@@ -28,11 +28,16 @@ struct NowPlayingView: View {
                         Group {
                             if settings.atmosOn, let song = player.current {
                                 AtmosScene(title: song.displayTitle, playing: player.isPlaying)
-                                    .clipShape(RoundedRectangle(cornerRadius: artSize * 0.12, style: .continuous))
+                                    .clipShape(RoundedRectangle(cornerRadius: artSize * 0.09, style: .continuous))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: artSize * 0.09, style: .continuous)
+                                            .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                                    )
                             } else {
                                 ArtworkView(song: player.current, size: artSize)
                             }
                         }
+                        .shadow(color: Color.black.opacity(0.55), radius: 24, x: 0, y: 10)
                         .opacity(showLyrics ? 0 : 1)
                         .gesture(dismissDrag)
                         .onTapGesture { toggleLyrics() }
@@ -82,32 +87,30 @@ struct NowPlayingView: View {
 
     private var background: some View {
         ZStack {
+            // 底层永远是主题深色。安卓播放页整屏也是纯色，画框只在中间一个图框里画。
+            Theme.bg.ignoresSafeArea()
+
             if settings.atmosOn, let song = player.current {
-                // 氛围画框作为整页背景，和安卓一致：按歌名选景
+                // 整屏只做「氛围色烘托」：重度模糊 + 压暗，绝不清晰显示楼/窗，
+                // 否则会和中间的清晰图框叠成「楼中楼」，文字也全压在亮窗户上看不清。
                 AtmosScene(title: song.displayTitle, playing: player.isPlaying)
                     .ignoresSafeArea()
-                // 顶部/底部压暗，保证文字可读
-                LinearGradient(
-                    colors: [Color.black.opacity(0.42), Color.clear, Color.clear, Color.black.opacity(0.55)],
-                    startPoint: .top, endPoint: .bottom
-                )
-                .ignoresSafeArea()
-            } else {
-                Theme.bg
-                if let song = player.current, let img = LibraryStore.artworkImage(for: song) {
-                    Image(uiImage: img)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .blur(radius: 70)
-                        .opacity(0.45)
-                } else {
-                    LinearGradient(
-                        colors: [Theme.accent.opacity(0.45), Theme.bg],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                }
+                    .blur(radius: 34)
+                    .opacity(0.26)
+            } else if let song = player.current, let img = LibraryStore.artworkImage(for: song) {
+                Image(uiImage: img)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .blur(radius: 60)
+                    .opacity(0.30)
             }
+
+            // 上/下压暗遮罩，保证顶部专辑名与底部控件在亮色氛围上也清楚
+            LinearGradient(
+                colors: [Color.black.opacity(0.42), Color.black.opacity(0.10), Color.black.opacity(0.58)],
+                startPoint: .top, endPoint: .bottom
+            )
+            .ignoresSafeArea()
         }
     }
 
@@ -124,14 +127,14 @@ struct NowPlayingView: View {
 
             Spacer()
 
-            VStack(spacing: 3) {
-                Capsule()
-                    .fill(Color.white.opacity(0.28))
-                    .frame(width: 36, height: 4)
+            VStack(spacing: 2) {
                 Text(albumText)
-                    .font(.system(size: 12))
-                    .foregroundColor(Theme.text3)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundColor(Theme.text2)
                     .lineLimit(1)
+                Text("正在播放")
+                    .font(.system(size: 10))
+                    .foregroundColor(Theme.text3)
             }
 
             Spacer()
