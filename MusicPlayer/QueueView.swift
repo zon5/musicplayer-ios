@@ -15,7 +15,10 @@ struct QueueView: View {
                 ForEach(list.indices, id: \.self) { i in
                     row(song: list[i], index: i, currentIndex: cur)
                 }
-                .onMove { from, to in player.moveInQueue(from: from, to: to) }
+                .onMove { from, to in
+                    // List 的 onMove 给的是 IndexSet（通常是单个下标）
+                    if let src = from.first { player.moveInQueue(from: src, to: to) }
+                }
                 .onDelete { idx in
                     // 从后往前删，避免下标越界；跳过当前曲
                     for i in idx.sorted(by: >) { player.removeFromQueue(at: i) }
