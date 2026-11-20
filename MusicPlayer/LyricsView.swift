@@ -3,9 +3,12 @@ import SwiftUI
 struct LyricsView: View {
     @EnvironmentObject var player: PlayerEngine
     @EnvironmentObject var settings: SettingsStore
+    @EnvironmentObject var library: LibraryStore
 
     @State private var lines: [LrcLine] = []
     @State private var index: Int = -1
+    /// 本首歌已经尝试过联网补词，避免反复请求
+    @State private var enrichTriedFor: String? = nil
 
     private var fontSize: CGFloat { 16 * CGFloat(settings.lyricFontScale) }
 
@@ -75,8 +78,17 @@ struct LyricsView: View {
         lines = []
         index = -1
         guard let song = player.current else { return }
-        lines = LrcParser.lines(for: song)
+        let parsed = LrcParser.lines(for: song)
+        lines = parsed
         updateIndex()
+        // 两段式取词：本地滚不动就主动联网重取（修「歌词没有」）
+        if !LrcParser.scrollable(parsed), enrichTriedFor != song.id {
+            enrichTriedFor = song.id
+            let id = song.id
+            Task.detached(priority: .utility) {
+                await library.ensureScrollableLyrics(for: id)
+            }
+        }
     }
 
     private func updateIndex() {

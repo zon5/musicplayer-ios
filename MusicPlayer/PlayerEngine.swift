@@ -34,6 +34,15 @@ final class PlayerEngine: NSObject, ObservableObject {
     private var ticker: Timer?
     private var attempts = 0
 
+    // ---- 双 Deck 串烧（移植安卓 PlaybackController）----
+    /// 当前过渡方案（后台算好），nil 表示还没排/不该串烧
+    private var pendingPlan: MixPlan?
+    /// 串烧专用备路播放器（系统库歌用：本地歌走 AudioEffects 的双 deck）
+    private var standbyPlayer: AVPlayer?
+    private var mixActive = false
+    /// 本首歌是否已排过方案，避免 tick 里重复排
+    private var plannedForSongID: String? = nil
+
     private var endObserver: NSObjectProtocol?
     private var durationObs: NSKeyValueObservation?
     private var statusObs: NSKeyValueObservation?
@@ -78,9 +87,11 @@ final class PlayerEngine: NSObject, ObservableObject {
         if let s = settings {
             effects.apply(settings: s)
         }
-        // 本地文件：按当前开关决定是否切到音效后端（保留进度）
+        // 本地文件：一律走 AVAudioEngine 后端（真实频谱 + EQ/音箱模拟）。
+        // ⚠️ 2026-11-20：以前只在开 EQ 时才走引擎，导致本地歌默认用假的动态频谱；
+        // 现在本地歌始终走引擎拿真实 FFT，EQ 关闭时引擎内 EQ 节点旁通即可。
         if let song = current, !song.isSystem, let s = settings {
-            let want = s.eqEnabled || s.speakerOn
+            let want = true
             if want != useEffects, let url = song.playURL {
                 let pos = self.position
                 let wasPlaying = isPlaying
@@ -116,6 +127,7 @@ final class PlayerEngine: NSObject, ObservableObject {
     }
 
     func togglePlay() {
+        if isPlaying { abortMix() } // 暂停中断串烧
         if useEffects {
             if isPlaying { effects.pause(); isPlaying = false; stopTicker() }
             else { effects.resume(); isPlaying = true; startTicker() }
@@ -129,7 +141,20 @@ final class PlayerEngine: NSObject, ObservableObject {
         refreshNowPlaying()
     }
 
+    /// 中断正在进行的串烧（对齐安卓 abortMix：清备路、主路音量/速率复位）
+    private func abortMix() {
+        if mixActive {
+            effects.abortMix()
+            standbyPlayer?.pause()
+            standbyPlayer = nil
+            mixActive = false
+            pendingPlan = nil
+            plannedForSongID = nil
+        }
+    }
+
     func seek(to t: Double) {
+        abortMix()
         let v = max(0, min(t, duration))
         if useEffects { effects.seek(to: v) }
         else { player?.seek(to: CMTime(seconds: v, preferredTimescale: 600)) }
@@ -139,6 +164,7 @@ final class PlayerEngine: NSObject, ObservableObject {
 
     func next(auto: Bool = false) {
         guard !queue.isEmpty else { return }
+        abortMix()
         if auto, repeatMode == .one {
             if useEffects { effects.seek(to: 0); effects.resume(); isPlaying = true }
             else { player?.seek(to: .zero); player?.play(); isPlaying = true }
@@ -165,6 +191,7 @@ final class PlayerEngine: NSObject, ObservableObject {
 
     func prev() {
         guard !queue.isEmpty else { return }
+        abortMix()
         if position > 3.0 { seek(to: 0); return }
         if index > 0 {
             index -= 1
@@ -264,15 +291,18 @@ final class PlayerEngine: NSObject, ObservableObject {
         guard queue.indices.contains(index) else { return }
         let song = queue[index]
         guard let url = song.playURL else { skipFailed(); return }
+        abortMix()
         teardownAll()
         stopTicker()
+        pendingPlan = nil
+        plannedForSongID = nil
 
         current = song
         duration = song.duration
         position = 0
 
-        // 只有本地文件 + 开启音效 才走 AVAudioEngine；系统库歌 Apple 不允许接 EQ
-        let wantEffects = !song.isSystem && (settings?.eqEnabled == true || settings?.speakerOn == true)
+        // 本地文件一律走 AVAudioEngine（真实频谱 + EQ 旁通由引擎内部处理）；系统库歌 Apple 限制走 AVPlayer
+        let wantEffects = !song.isSystem
         if wantEffects {
             useEffects = true
             SpectrumStore.shared.simulate = false // 引擎链有真实 PCM
@@ -333,8 +363,128 @@ final class PlayerEngine: NSObject, ObservableObject {
         attempts = 0
     }
 
-    /// 切歌前对当前后端做淡出，then 切到下一首。用 crossfadeSec 的一半作淡出。
+    // MARK: - 双 Deck 串烧（移植安卓 AutoMix + PlaybackController）
+
+    /// 是否启用真串烧：设置里「像 DJ 一样接歌」开启 + 有下一首 + 正在播放
+    private var mixEnabled: Bool {
+        settings?.crossfadeOn == true && isPlaying && index + 1 < queue.count
+    }
+
+    /// 后台预分析两首歌的节拍，排出过渡方案（不阻塞播放线程）
+    private func planAhead() {
+        guard mixEnabled, let song = current else { return }
+        if plannedForSongID == song.id { return }
+        plannedForSongID = song.id
+        let a = song
+        let b = queue[index + 1]
+        Task.detached(priority: .utility) { [weak self] in
+            let ba = BeatAnalyzer.shared.beat(for: a)
+            let bb = BeatAnalyzer.shared.beat(for: b)
+            let plan: MixPlan
+            if ba.valid || bb.valid {
+                plan = AutoMixer.plan(a: ba, aDurationMs: Int64(a.duration * 1000), b: bb)
+            } else {
+                plan = AutoMixer.fallback(aDurationMs: Int64(a.duration * 1000))
+            }
+            DispatchQueue.main.async {
+                guard let self = self, self.current?.id == a.id, self.mixEnabled else { return }
+                self.pendingPlan = plan
+            }
+        }
+    }
+
+    /// 每次 tick 检查：进度是否到了淡出起点，到点就启动交叉淡化
+    private func maybeStartMix(_ t: Double) {
+        guard mixEnabled, !mixActive, let plan = pendingPlan else { return }
+        // 用实测时长重排淡出起点（媒体库时长常有误差），对齐安卓 retune 思路
+        let dur = duration
+        guard dur > 1 else { return }
+        let fadeStart = min(Double(plan.fadeStartMs) / 1000.0, dur - 0.6)
+        guard t >= fadeStart else { return }
+
+        let nextSong = queue[index + 1]
+        let crossSec = max(0.5, min(Double(plan.crossfadeMs) / 1000.0, Double(settings?.crossfadeSec ?? 8)))
+        let ratio = plan.tempoRatio
+        let gainB = plan.gainB
+        let seekSec = Double(plan.seekBMs) / 1000.0
+
+        if useEffects {
+            // 本地歌：AudioEffects 双 deck，真实等功率交叉淡化 + 变速
+            guard let url = nextSong.playURL,
+                  effects.prepareStandby(url: url, seekSec: seekSec, tempoRatio: ratio, gainB: gainB) else {
+                pendingPlan = nil
+                return
+            }
+            mixActive = true
+            effects.performCrossfade(seconds: crossSec, gainB: gainB) { [weak self] in
+                self?.finishMix()
+            }
+        } else if let curPlayer = player, let url = nextSong.playURL {
+            // 系统库歌：双 AVPlayer 交叉淡化（拿不到 PCM，但交叉淡化本身是真的）
+            let item = AVPlayerItem(url: url)
+            let standby = AVPlayer(playerItem: item)
+            if seekSec > 0 { standby.seek(to: CMTime(seconds: seekSec, preferredTimescale: 600)) }
+            standby.rate = ratio
+            standby.volume = 0
+            standby.play()
+            standbyPlayer = standby
+            mixActive = true
+            crossfadeAV(from: curPlayer, to: standby, seconds: crossSec, gainB: gainB) { [weak self] in
+                self?.finishMix()
+            }
+        }
+    }
+
+    /// 交叉淡化完成：切到下一首为当前曲，清理备用路
+    private func finishMix() {
+        let nextIdx = index + 1
+        guard queue.indices.contains(nextIdx) else { mixActive = false; return }
+        // 停掉旧主路（effects 内部已 swap；AVPlayer 路这里停旧的）
+        if !useEffects {
+            player?.pause()
+            player = standbyPlayer
+            standbyPlayer = nil
+        }
+        index = nextIdx
+        current = queue[nextIdx]
+        mixActive = false
+        pendingPlan = nil
+        plannedForSongID = nil
+        duration = current?.duration ?? 0
+        position = 0
+        refreshNowPlaying()
+        // 新曲成为主曲后，立刻为「下下首」预排方案，形成连续 DJ 串烧
+        planAhead()
+    }
+
+    /// 双 AVPlayer 等功率交叉淡化（系统库歌）
+    private func crossfadeAV(from a: AVPlayer, to b: AVPlayer, seconds: Double, gainB: Float, completion: @escaping () -> Void) {
+        let steps = max(8, Int(seconds * 50))
+        let dt = seconds / Double(steps)
+        var i = 0
+        Timer.scheduledTimer(withTimeInterval: dt, repeats: true) { t in
+            i += 1
+            let k = min(1, Double(i) / Double(steps))
+            b.volume = Float(sin(k * .pi / 2)) * gainB
+            a.volume = Float(cos(k * .pi / 2))
+            if i >= steps { t.invalidate(); completion() }
+        }
+    }
+
+    /// 用户手动点「下一首」时：若串烧开着且有方案，用真交叉淡化；否则普通淡出切歌
     func crossfadeToNext() {
+        if mixEnabled, let plan = pendingPlan, !mixActive {
+            let crossSec = max(0.5, min(Double(plan.crossfadeMs) / 1000.0, Double(settings?.crossfadeSec ?? 8)))
+            let nextSong = queue[index + 1]
+            if useEffects, let url = nextSong.playURL,
+               effects.prepareStandby(url: url, seekSec: Double(plan.seekBMs) / 1000.0,
+                                      tempoRatio: plan.tempoRatio, gainB: plan.gainB) {
+                mixActive = true
+                effects.performCrossfade(seconds: crossSec, gainB: plan.gainB) { [weak self] in self?.finishMix() }
+                return
+            }
+        }
+        // 降级：普通淡出切歌
         guard settings?.crossfadeOn == true, isPlaying else { next(); return }
         let half = TimeInterval(max(1, settings?.crossfadeSec ?? 4) / 2)
         if useEffects {
@@ -343,12 +493,8 @@ final class PlayerEngine: NSObject, ObservableObject {
                 self?.next()
             }
         } else if let p = player {
-            fade(avPlayer: p, to: 0, duration: half) { [weak self] in
-                self?.next()
-            }
-        } else {
-            next()
-        }
+            fade(avPlayer: p, to: 0, duration: half) { [weak self] in self?.next() }
+        } else { next() }
     }
 
     private func fade(avPlayer p: AVPlayer, to target: Float, duration: TimeInterval, completion: (() -> Void)? = nil) {
@@ -379,19 +525,35 @@ final class PlayerEngine: NSObject, ObservableObject {
     private func startTicker() {
         stopTicker()
         SpectrumStore.shared.playing = true
-        // 0.5s 足够驱动进度条/歌词/信息坞；过快会让整个 SwiftUI 视图树反复重算导致卡顿
-        ticker = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        // 串烧排好后加快到 0.1s 以便精确落到淡出点；平时 0.5s 驱动进度/歌词/信息坞
+        let interval: TimeInterval = (settings?.crossfadeOn == true) ? 0.1 : 0.5
+        ticker = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             guard let self = self, self.isPlaying else { return }
             let t = self.useEffects ? self.effects.currentTime : (self.player?.currentTime().seconds ?? 0)
             guard t.isFinite else { return }
             self.position = t
             guard let s = self.settings else { return }
-            // 睡眠定时器：到点后暂停（或放完当前曲再停）
+            // 睡眠定时
             self.checkSleep(s)
-            // 沉浸式播放（串烧）：播到设定比例就淡出切下一首
-            if s.immersiveOn, self.duration > 1,
-               t >= self.duration * Double(s.immersiveRatio) {
-                self.crossfadeToNext()
+            // 真串烧：后台预排方案 + 到点交叉淡化
+            if s.crossfadeOn {
+                self.planAhead()
+                self.maybeStartMix(t)
+            }
+            // 沉浸式播放（串烧模式）：在设定的歌曲比例处提前进入过渡
+            if s.immersiveOn, !self.mixActive, self.duration > 1,
+               t >= self.duration * Double(s.immersiveRatio), self.pendingPlan == nil {
+                // 沉浸式用比例覆盖淡出起点：把方案里的 fadeStart 提前到该比例
+                if var p = self.pendingPlan {
+                    p.fadeStartMs = Int64(self.duration * Double(s.immersiveRatio) * 1000)
+                    self.pendingPlan = p
+                } else {
+                    // 还没排好方案时，造一个「在该比例淡出」的方案
+                    let durMs = Int64(self.duration * 1000)
+                    var p = AutoMixer.fallback(aDurationMs: durMs)
+                    p.fadeStartMs = Int64(self.duration * Double(s.immersiveRatio) * 1000)
+                    self.pendingPlan = p
+                }
             }
         }
     }

@@ -233,6 +233,46 @@ final class LibraryStore: ObservableObject {
         song.lrcName == nil || song.releaseYm == nil || song.writerLyric == nil || song.writerMusic == nil
     }
 
+    /// 两段式取词（对齐安卓 LyricsView）：先读本地；若本地歌词为空或「滚不动」
+    /// （纯文本 / 时间戳首尾差 <3s），就强制联网重取带时间轴的歌词并落盘。
+    /// 这是修「歌词没有」的关键：以前只在切歌时补一次，失败或文本歌词就永远没滚动歌词。
+    /// - Returns: 是否已经发起联网（true 表示调用方应等 songMetaDidUpdate 通知再刷新）
+    @discardableResult
+    func ensureScrollableLyrics(for songID: String) async -> Bool {
+        guard let idx = songs.firstIndex(where: { $0.id == songID }) else { return false }
+        let song = songs[idx]
+        // 第一段：本地已是「可滚动」歌词 → 直接用，不联网
+        let local = LrcParser.lines(for: song)
+        if LrcParser.scrollable(local) { return false }
+
+        // 第二段：本地滚不动 → 联网重取（enrich 内部会 search → lyric → 落 net_*.lrc）
+        let meta = await MetaFetcher.shared.enrich(song: song)
+        guard let lrc = meta.lrc, !lrc.isEmpty else { return false }
+        // 只有拿到「可滚动」的歌词才落盘，避免用纯文本覆盖掉能滚动的版本
+        let parsed = LrcParser.parse(lrc)
+        guard LrcParser.scrollable(parsed) else { return false }
+
+        let name = "net_" + Self.stableHash(song.id) + ".lrc"
+        let wrote = (try? lrc.write(to: Self.documents.appendingPathComponent(name), atomically: true, encoding: .utf8)) != nil
+        guard wrote else { return false }
+        if let tr = meta.tlyric, !tr.isEmpty {
+            let trName = "net_" + Self.stableHash(song.id) + ".tlyric"
+            try? tr.write(to: Self.documents.appendingPathComponent(trName), atomically: true, encoding: .utf8)
+        }
+        var updated = song
+        updated.lrcName = name
+        if updated.releaseYm == nil { updated.releaseYm = meta.releaseYm }
+        if updated.writerLyric == nil { updated.writerLyric = meta.writerLyric }
+        if updated.writerMusic == nil { updated.writerMusic = meta.writerMusic }
+        let final = updated
+        await MainActor.run {
+            self.songs[idx] = final
+            self.save()
+            NotificationCenter.default.post(name: .songMetaDidUpdate, object: final.id, userInfo: ["song": final])
+        }
+        return true
+    }
+
     /// 一键补齐全库：串行补，逐个回调进度
     func enrichAll(progress: @escaping (Int, Int) -> Void) async {
         let targets = songs.filter { needsEnrich($0) }

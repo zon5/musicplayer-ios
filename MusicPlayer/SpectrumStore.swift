@@ -21,6 +21,7 @@ final class SpectrumStore: ObservableObject {
     private var filled = 0
     private var bandStart: [Int] = []
     private var smooth: [Float] = []
+    private var monoBuf: [Float] = []   // 复用的混声道缓冲，避免音频线程每次分配
     private var sampleRate: Double = 44100
 
     // ---- 待显示的一帧（音频线程写，定时器读）----
@@ -83,13 +84,15 @@ final class SpectrumStore: ObservableObject {
         }
         let count = Int(pcm.frameLength)
         let channels = Int(pcm.format.channelCount)
-        // 混成单声道（和安卓 GainProcessor 喂频谱口径一致）
-        var mono = [Float](repeating: 0, count: count)
+        // 混成单声道（和安卓 GainProcessor 喂频谱口径一致）；复用缓冲避免音频线程分配
+        if monoBuf.count < count { monoBuf = [Float](repeating: 0, count: count) }
+        for i in 0..<count { monoBuf[i] = 0 }
+        let inv = 1.0 / Float(max(1, channels))
         for c in 0..<channels {
             let ptr = ch[c]
-            for i in 0..<count { mono[i] += ptr[i] / Float(max(1, channels)) }
+            for i in 0..<count { monoBuf[i] += ptr[i] * inv }
         }
-        consumeRaw(&mono, count: count)
+        consumeRaw(&monoBuf, count: count)
     }
 
     private func consumeRaw(_ samples: inout [Float], count: Int) {
@@ -197,14 +200,22 @@ final class SpectrumStore: ObservableObject {
             guard let self = self else { return }
             guard self.playing else { return }
             if self.simulate {
-                // 平滑动态兜底：多组不同相位的正弦叠加，低频高、高频低，看着像真频谱
+                // 系统库 DRM 歌曲兜底：用「带节拍脉冲的音乐包络」代替规则正弦，
+                // 每 ~0.5s 一记低频 kick、中频跟随、高频碎拍，比纯正弦自然得多。
                 let t = Date().timeIntervalSinceReferenceDate
+                let beat = t * 2.0            // 约 120 BPM
+                let kick = pow(max(0, sin(beat * .pi)), 6)  // 低频每拍一个尖峰
+                let snare = pow(max(0, sin((beat + 0.5) * .pi)), 8)
                 for i in 0..<SpectrumStore.BANDS {
-                    let base = 0.55 - 0.35 * Double(i) / Double(SpectrumStore.BANDS)
-                    let w1 = sin(t * 2.3 + Double(i) * 0.55)
-                    let w2 = sin(t * 1.1 + Double(i) * 0.27 + 1.7)
-                    let w3 = sin(t * 4.7 + Double(i) * 0.13)
-                    let v = base + 0.16 * w1 + 0.12 * w2 + 0.07 * w3
+                    let f = Double(i) / Double(SpectrumStore.BANDS)
+                    var v: Double
+                    if i < 4 {              // 低频：kick 主导
+                        v = 0.30 + 0.60 * kick * (1 - f * 0.5)
+                    } else if i < 12 {      // 中频：snare + 持续音
+                        v = 0.28 + 0.35 * snare + 0.10 * sin(t * 3.1 + Double(i) * 0.6)
+                    } else {                // 高频：碎拍闪烁，整体偏低
+                        v = 0.18 + 0.22 * abs(sin(t * 6.7 + Double(i) * 1.3)) + 0.10 * snare
+                    }
                     self.display[i] = max(0.06, min(1, Float(v)))
                 }
                 self.levels = self.display

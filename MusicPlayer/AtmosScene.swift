@@ -272,36 +272,30 @@ private func desat(_ c: Color, _ k: Float) -> Color {
 
 // MARK: - 绘制
 
-/// 画框动画时钟：和安卓 AtmosFrame 一样用「累加秒数」，playing=false 时钟停走、画面定格在
-/// 当前帧（而不是跳回 0）。⚠️ 不能用 ctx.date.timeIntervalSinceReferenceDate：那是 7.8 亿秒级，
-/// 传给 Float 精度只剩几十秒，动画看起来不动/乱跳；而且 TimelineView(.animation) 暂停时仍每帧重绘。
-/// 这里用 CADisplayLink 自驱：暂停时不发布新值 → Canvas 不重绘 → 不卡。
-final class SceneClock: ObservableObject {
-    @Published var t: Float = 0
-    private var link: CADisplayLink?
-    private var last: CFTimeInterval = 0
-    var playing: Bool = true
+/// 画框动画时钟：把「墙上时间」换成「相对秒数」，避免 Float 精度问题。
+///
+/// ⚠️⚠️ 关键（2026-11-20 修复「图框不动」）：SwiftUI 的 `Canvas` 绘制闭包**不会**因为
+/// 里面读到的 @Published 值变化而自动重绘——之前用 CADisplayLink 累加 t 在空转，
+/// 值在涨但画面一帧都不重画，看起来就是「图框不动」。
+/// 正确做法：用 `TimelineView(.animation)` 每帧重建视图树，把 timeline.date 传进来；
+/// 暂停时不给动画 schedule（TimelineView 停更），画面自然定格在当前帧。
+final class SceneClock {
+    /// 累计播放秒数（相对值，绝不用 timeIntervalSinceReferenceDate）
+    private(set) var t: Float = 0
+    private var lastDate: Date? = nil
 
-    func start() {
-        guard link == nil else { return }
-        link = CADisplayLink(target: self, selector: #selector(tick(_:)))
-        // 30fps 足够表现云/雨/水波，60fps 会让整个 Canvas 每帧全量重绘拖慢整机
-        link?.preferredFramesPerSecond = 30
-        link?.add(to: .main, forMode: .common)
-        last = 0
+    /// 用 TimelineView 给的当前帧时间推进；playing=false 时不推进 → 定格
+    func advance(to date: Date, playing: Bool) -> Float {
+        defer { lastDate = date }
+        guard playing else { return t }
+        if let last = lastDate {
+            let dt = date.timeIntervalSince(last)
+            t += Float(min(max(dt, 0), 0.05)) // 单帧最多 50ms，防止切后台回来跳变
+        }
+        return t
     }
-    func stop() {
-        link?.invalidate()
-        link = nil
-        last = 0
-    }
-    @objc private func tick(_ l: CADisplayLink) {
-        guard playing else { return }
-        if last == 0 { last = l.timestamp; return }
-        let dt = l.timestamp - last
-        last = l.timestamp
-        t += Float(min(max(dt, 0), 0.05))
-    }
+    /// 切歌/重启时归零
+    func reset() { t = 0; lastDate = nil }
 }
 
 struct AtmosScene: View {
@@ -311,21 +305,24 @@ struct AtmosScene: View {
     var animated: Bool = true
 
     @State private var spec: AtmosSpec = AtmosSpec.build(title: "", accent: Theme.accent)
-    @StateObject private var clock = SceneClock()
+    @State private var clock = SceneClock()
 
     var body: some View {
-        Canvas { g, size in
-            drawScene(g: g, w: size.width, h: size.height, s: spec, t: clock.t)
+        // ⚠️ 用 TimelineView(.animation) 每帧重建视图，Canvas 才会真的重绘（这是「图框动起来」的关键）。
+        // 暂停时 clock 不推进 → t 不变 → 画面定格在当前帧（虽然每帧重建但内容相同）。
+        TimelineView(.animation) { ctx in
+            let t = clock.advance(to: ctx.date, playing: animated && playing)
+            Canvas { g, size in
+                drawScene(g: g, w: size.width, h: size.height, s: spec, t: t)
+            }
         }
         .onAppear {
             spec = AtmosSpec.build(title: title, accent: Theme.accent)
-            clock.playing = playing
-            if animated { clock.start() }
+            clock.reset()
         }
-        .onDisappear { clock.stop() }
-        .onChange(of: playing) { newValue in clock.playing = newValue }
         .onChange(of: title) { newValue in
             spec = AtmosSpec.build(title: newValue, accent: Theme.accent)
+            clock.reset()
         }
     }
 
