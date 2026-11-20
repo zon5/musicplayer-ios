@@ -56,8 +56,8 @@ struct EqView: View {
                         }
                         Slider(
                             value: Binding(
-                                get: { settings.eqBands[i] },
-                                set: { settings.setBand(i, db: $0) }
+                                get: { Double(settings.eqBands[i]) },
+                                set: { settings.setBand(i, db: Float($0)) }
                             ),
                             in: -12...12, step: 0.5
                         )
@@ -69,12 +69,12 @@ struct EqView: View {
 
             Section(header: Text("低音增强 / 输出增益")) {
                 sliderRow(title: "低音增强", value: Binding(
-                    get: { settings.bassDb },
-                    set: { settings.bassDb = $0; player.refreshEffects() }
+                    get: { Double(settings.bassDb) },
+                    set: { settings.bassDb = Float($0); player.refreshEffects() }
                 ))
                 sliderRow(title: "输出增益", value: Binding(
-                    get: { settings.preampDb },
-                    set: { settings.preampDb = $0; player.refreshEffects() }
+                    get: { Double(settings.preampDb) },
+                    set: { settings.preampDb = Float($0); player.refreshEffects() }
                 ))
             }
 
@@ -95,7 +95,7 @@ struct EqView: View {
         .accentColor(settings.accent)
     }
 
-    private func sliderRow(title: String, value: Binding<Float>) -> some View {
+    private func sliderRow(title: String, value: Binding<Double>) -> some View {
         VStack(spacing: 4) {
             HStack {
                 Text(title).font(.system(size: 14))

@@ -110,7 +110,7 @@ private func lerp(_ a: Color, _ b: Color, _ t: Float) -> Color {
     let r0 = Double(a.redValue), r1 = Double(b.redValue)
     let g0 = Double(a.greenValue), g1 = Double(b.greenValue)
     let b0 = Double(a.blueValue), b1 = Double(b.blueValue)
-    let a0 = Double(a.opacity), a1 = Double(b.opacity)
+    let a0 = a.components.a, a1 = b.components.a
     let rr = r0 + (r1 - r0) * k
     let gg = g0 + (g1 - g0) * k
     let bb = b0 + (b1 - b0) * k

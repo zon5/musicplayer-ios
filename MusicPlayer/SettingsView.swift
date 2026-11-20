@@ -62,7 +62,10 @@ struct SettingsView: View {
                             Text(String(format: "%.0f 秒", settings.crossfadeSec))
                                 .foregroundColor(Theme.text3)
                         }
-                        Slider(value: $settings.crossfadeSec, in: 1...12, step: 1)
+                        Slider(value: Binding(
+                            get: { Double(settings.crossfadeSec) },
+                            set: { settings.crossfadeSec = Float($0) }
+                        ), in: 1...12, step: 1)
                             .tint(settings.accent)
                     }
                     .padding(.vertical, 4)
