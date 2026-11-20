@@ -84,6 +84,7 @@ final class PlayerEngine: NSObject, ObservableObject {
                 teardownAll()
                 if want {
                     useEffects = true
+                    SpectrumStore.shared.simulate = false
                     effects.play(url: url, settings: s) { [weak self] in self?.next(auto: true) }
                     effects.seek(to: pos)
                     if wasPlaying { effects.resume() } else { effects.pause() }
@@ -206,6 +207,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         let wantEffects = !song.isSystem && (settings?.eqEnabled == true || settings?.speakerOn == true)
         if wantEffects {
             useEffects = true
+            SpectrumStore.shared.simulate = false // 引擎链有真实 PCM
             effects.apply(settings: settings!)
             effects.play(url: url, settings: settings!) { [weak self] in
                 self?.next(auto: true)
@@ -223,8 +225,8 @@ final class PlayerEngine: NSObject, ObservableObject {
 
     private func loadAVPlayer(url: URL, song: Song, at pos: Double, autoPlay: Bool) {
         let item = AVPlayerItem(url: url)
-        // 系统库走 AVPlayer，用 MTAudioProcessingTap 拿 PCM 喂频谱（EQ 仍受 Apple 限制接不上）
-        item.audioMix = SpectrumStore.shared.audioMix(for: item.asset)
+        // 系统库走 AVPlayer：ipod-library:// 受 Apple 限制拿不到真实 PCM，频谱用动态兜底
+        SpectrumStore.shared.simulate = true
         let p = AVPlayer(playerItem: item)
         player = p
         useEffects = false

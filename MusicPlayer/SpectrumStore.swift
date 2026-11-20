@@ -31,11 +31,15 @@ final class SpectrumStore: ObservableObject {
     private var tapInstalled = false
     private var timer: Timer?
 
+    /// 系统库歌走 AVPlayer（ipod-library:// 受 Apple 限制拿不到真实 PCM）：
+    /// 用平滑的动态频谱兜底，保证底部频谱图始终在动。本地导入歌走引擎真实 FFT 时为 false。
+    var simulate = false
+
     init() {
         let denom = Double(n - 1)
         window = (0..<n).map { i in
             let phase = 2.0 * .pi * Double(i) / denom
-            return 0.5 - 0.5 * cos(phase)
+            return Float(0.5 - 0.5 * cos(phase))
         }
         re = [Float](repeating: 0, count: n)
         im = [Float](repeating: 0, count: n)
@@ -187,6 +191,20 @@ final class SpectrumStore: ObservableObject {
         guard timer == nil else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
             guard let self = self else { return }
+            if self.simulate {
+                // 平滑动态兜底：多组不同相位的正弦叠加，低频高、高频低，看着像真频谱
+                let t = Date().timeIntervalSinceReferenceDate
+                for i in 0..<SpectrumStore.BANDS {
+                    let base = 0.55 - 0.35 * Double(i) / Double(SpectrumStore.BANDS)
+                    let w1 = sin(t * 2.3 + Double(i) * 0.55)
+                    let w2 = sin(t * 1.1 + Double(i) * 0.27 + 1.7)
+                    let w3 = sin(t * 4.7 + Double(i) * 0.13)
+                    let v = base + 0.16 * w1 + 0.12 * w2 + 0.07 * w3
+                    self.display[i] = max(0.06, min(1, Float(v)))
+                }
+                self.levels = self.display
+                return
+            }
             self.frameLock.lock()
             let live = self.frame
             self.frameLock.unlock()
