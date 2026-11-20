@@ -96,7 +96,7 @@ final class LibraryStore: ObservableObject {
                 title: item.title ?? "",
                 artist: item.artist ?? "",
                 album: item.albumTitle ?? "",
-                duration: item.duration,
+                duration: (item.value(forProperty: MPMediaItemPropertyPlaybackDuration) as? NSNumber)?.doubleValue ?? 0,
                 addedAt: Date(),
                 artworkName: artName,
                 lrcName: nil,
