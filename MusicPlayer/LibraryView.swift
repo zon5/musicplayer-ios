@@ -6,8 +6,10 @@ struct LibraryView: View {
     @EnvironmentObject var library: LibraryStore
     @EnvironmentObject var player: PlayerEngine
 
+    @EnvironmentObject var settings: SettingsStore
     @State private var showPlayer = false
     @State private var showImporter = false
+    @State private var showSettings = false
     @State private var importError: String?
 
     private var importTypes: [UTType] {
@@ -44,10 +46,17 @@ struct LibraryView: View {
                     }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        showImporter = true
-                    } label: {
-                        Image(systemName: "plus")
+                    HStack(spacing: 16) {
+                        Button {
+                            showSettings = true
+                        } label: {
+                            Image(systemName: "slider.horizontal.3")
+                        }
+                        Button {
+                            showImporter = true
+                        } label: {
+                            Image(systemName: "plus")
+                        }
                     }
                 }
             }
@@ -71,6 +80,12 @@ struct LibraryView: View {
         .fullScreenCover(isPresented: $showPlayer) {
             NowPlayingView()
                 .environmentObject(library)
+                .environmentObject(player)
+                .environmentObject(settings)
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView()
+                .environmentObject(settings)
                 .environmentObject(player)
         }
     }

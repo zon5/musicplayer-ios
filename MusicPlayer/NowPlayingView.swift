@@ -3,6 +3,7 @@ import UIKit
 
 struct NowPlayingView: View {
     @EnvironmentObject var player: PlayerEngine
+    @EnvironmentObject var settings: SettingsStore
     @Environment(\.dismiss) private var dismiss
 
     @State private var showLyrics = false
@@ -23,10 +24,18 @@ struct NowPlayingView: View {
                     Spacer(minLength: 8)
 
                     ZStack {
-                        ArtworkView(song: player.current, size: artSize)
-                            .opacity(showLyrics ? 0 : 1)
-                            .gesture(dismissDrag)
-                            .onTapGesture { toggleLyrics() }
+                        // 封面页：氛围画框（和安卓的歌词图框同源），无封面/关闭画框时退回静态封面
+                        Group {
+                            if settings.atmosOn, let song = player.current {
+                                AtmosScene(title: song.displayTitle, playing: player.isPlaying)
+                                    .clipShape(RoundedRectangle(cornerRadius: artSize * 0.12, style: .continuous))
+                            } else {
+                                ArtworkView(song: player.current, size: artSize)
+                            }
+                        }
+                        .opacity(showLyrics ? 0 : 1)
+                        .gesture(dismissDrag)
+                        .onTapGesture { toggleLyrics() }
 
                         LyricsView()
                             .opacity(showLyrics ? 1 : 0)
@@ -73,19 +82,31 @@ struct NowPlayingView: View {
 
     private var background: some View {
         ZStack {
-            Theme.bg
-            if let song = player.current, let img = LibraryStore.artworkImage(for: song) {
-                Image(uiImage: img)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .blur(radius: 70)
-                    .opacity(0.45)
-            } else {
+            if settings.atmosOn, let song = player.current {
+                // 氛围画框作为整页背景，和安卓一致：按歌名选景
+                AtmosScene(title: song.displayTitle, playing: player.isPlaying)
+                    .ignoresSafeArea()
+                // 顶部/底部压暗，保证文字可读
                 LinearGradient(
-                    colors: [Theme.accent.opacity(0.45), Theme.bg],
-                    startPoint: .top,
-                    endPoint: .bottom
+                    colors: [Color.black.opacity(0.42), Color.clear, Color.clear, Color.black.opacity(0.55)],
+                    startPoint: .top, endPoint: .bottom
                 )
+                .ignoresSafeArea()
+            } else {
+                Theme.bg
+                if let song = player.current, let img = LibraryStore.artworkImage(for: song) {
+                    Image(uiImage: img)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .blur(radius: 70)
+                        .opacity(0.45)
+                } else {
+                    LinearGradient(
+                        colors: [Theme.accent.opacity(0.45), Theme.bg],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
             }
         }
     }
@@ -217,7 +238,7 @@ struct NowPlayingView: View {
             }
 
             Button {
-                player.next()
+                player.crossfadeToNext()
             } label: {
                 Image(systemName: "forward.fill")
                     .font(.system(size: 25))
