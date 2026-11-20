@@ -53,4 +53,27 @@ enum LrcParser {
         guard withText.count >= 2, let first = lines.first, let last = lines.last else { return false }
         return last.time - first.time >= 3.0
     }
+
+    /// 找一首歌的歌词文件并读出解析后的行（本地同名 .lrc / 联网缓存 net_*.lrc）
+    static func lines(for song: Song) -> [LrcLine] {
+        var candidates: [URL] = []
+        if let name = song.lrcName {
+            candidates.append(LibraryStore.documents.appendingPathComponent(name))
+        }
+        let base = (song.fileName as NSString).deletingPathExtension
+        candidates.append(LibraryStore.documents.appendingPathComponent(base + ".lrc"))
+        // 联网补词落盘的固定命名：即使 player 手里的 Song 副本没刷新也能读到
+        candidates.append(LibraryStore.documents.appendingPathComponent("net_" + LibraryStore.stableHash(song.id) + ".lrc"))
+        for url in candidates where FileManager.default.fileExists(atPath: url.path) {
+            if let raw = readText(url) { return parse(raw) }
+        }
+        return []
+    }
+
+    /// 当前进度对应的行号；未到第一句返回 -1（dock 会退回首句）
+    static func index(at t: Double, in lines: [LrcLine]) -> Int {
+        var idx = -1
+        for (i, line) in lines.enumerated() where line.time <= t + 0.15 { idx = i }
+        return idx
+    }
 }

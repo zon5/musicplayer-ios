@@ -50,6 +50,24 @@ final class PlayerEngine: NSObject, ObservableObject {
             name: AVAudioSession.interruptionNotification,
             object: nil
         )
+        // 后台补词完成后，同步刷新队列/当前曲里的词曲年月（Song 是值类型副本）
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleMetaUpdate(_:)),
+            name: .songMetaDidUpdate,
+            object: nil
+        )
+    }
+
+    @objc private func handleMetaUpdate(_ note: Notification) {
+        guard let song = note.userInfo?["song"] as? Song else { return }
+        if let qi = queue.firstIndex(where: { $0.id == song.id }) {
+            queue[qi] = song
+        }
+        if current?.id == song.id {
+            current = song
+            refreshNowPlaying()
+        }
     }
 
     /// 设置页改了音效参数后调用：即时生效（重推 EQ）或让下一首切换后端
@@ -205,6 +223,8 @@ final class PlayerEngine: NSObject, ObservableObject {
 
     private func loadAVPlayer(url: URL, song: Song, at pos: Double, autoPlay: Bool) {
         let item = AVPlayerItem(url: url)
+        // 系统库走 AVPlayer，用 MTAudioProcessingTap 拿 PCM 喂频谱（EQ 仍受 Apple 限制接不上）
+        item.audioMix = SpectrumStore.shared.audioMix(for: item.asset)
         let p = AVPlayer(playerItem: item)
         player = p
         useEffects = false

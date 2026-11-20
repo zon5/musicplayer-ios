@@ -38,6 +38,7 @@ struct LibraryView: View {
                 .environmentObject(library)
                 .environmentObject(player)
                 .environmentObject(settings)
+                .environmentObject(SpectrumStore.shared)
         }
         .fileImporter(isPresented: $showImporter, allowedContentTypes: importTypes,
                       allowsMultipleSelection: true) { result in
@@ -190,6 +191,8 @@ struct LibraryView: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 4)
+            // 词 / 曲 / 发行年月（对齐安卓 CreditBlock：三行纵向、左对齐、贴时长左边）
+            creditBlock(song)
             if song.duration > 0 {
                 Text(fmt(song.duration))
                     .font(.system(size: 11).monospacedDigit())
@@ -204,6 +207,45 @@ struct LibraryView: View {
                 player.play(library.songs, at: idx)
             }
             showPlayer = true
+            triggerEnrich(song)
+        }
+    }
+
+    /// 右侧「词：X / 曲：X / 2024.05」三行小块。三项都缺就不画。
+    /// 用 layoutPriority 保证歌名让位给词曲（和安卓「词曲优先」一致）。
+    @ViewBuilder
+    private func creditBlock(_ song: Song) -> some View {
+        let lyric = song.writerLyric?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let music = song.writerMusic?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ym = song.releaseYm?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasL = !(lyric?.isEmpty ?? true)
+        let hasM = !(music?.isEmpty ?? true)
+        let hasY = !(ym?.isEmpty ?? true)
+        if hasL || hasM || hasY {
+            VStack(alignment: .leading, spacing: 1) {
+                if hasL { creditLine("词：\(lyric ?? "")", dim: false) }
+                if hasM { creditLine("曲：\(music ?? "")", dim: false) }
+                if hasY { creditLine(ym ?? "", dim: true) }
+            }
+            .frame(maxWidth: 128, alignment: .leading)
+            .layoutPriority(1)
+        }
+    }
+
+    private func creditLine(_ text: String, dim: Bool) -> some View {
+        Text(text)
+            .font(.system(size: 10))
+            .foregroundColor(dim ? Theme.text3.opacity(0.7) : Theme.text2)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// 后台补词：缺资料就联网补，结果落盘后 @Published songs 变化会自动刷新列表
+    private func triggerEnrich(_ song: Song) {
+        guard library.needsEnrich(song) else { return }
+        Task.detached(priority: .utility) {
+            await library.enrichMissing(song.id)
         }
     }
 
@@ -304,23 +346,8 @@ struct LibraryView: View {
 
             Divider().background(Color.white.opacity(0.08))
 
-            // 歌词 / 频谱展示条（安卓 BottomDock）
-            HStack(spacing: 12) {
-                Image(systemName: "text.alignleft")
-                    .font(.system(size: 13))
-                    .foregroundColor(Theme.accent)
-                Text(player.current?.displayTitle ?? "")
-                    .font(.system(size: 12))
-                    .foregroundColor(Theme.text2)
-                    .lineLimit(1)
-                Spacer()
-                Rectangle().fill(Color.white.opacity(0.15)).frame(width: 1, height: 26)
-                Image(systemName: "waveform")
-                    .font(.system(size: 14))
-                    .foregroundColor(Theme.accent)
-            }
-            .padding(.horizontal, 16)
-            .frame(height: 46)
+            // 歌词 / 频谱展示条（对齐安卓 BottomDock：左当前句+下一句，右实时频谱）
+            DockInfo()
         }
         .background(Theme.bg2)
         .overlay(Rectangle().fill(Theme.accent.opacity(0.5)).frame(height: 2), alignment: .top)

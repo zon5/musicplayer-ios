@@ -40,6 +40,8 @@ final class AudioEffects {
         engine.connect(playerNode, to: eqNode, format: nil)
         engine.connect(eqNode, to: distortion, format: nil)
         engine.connect(distortion, to: engine.mainMixerNode, format: nil)
+        // 频谱：在最终输出挂 tap，拿到的是处理链之后的真实声音
+        SpectrumStore.shared.attach(to: engine, node: engine.mainMixerNode)
         try? engine.start()
     }
 

@@ -5,6 +5,7 @@ struct MusicPlayerApp: App {
     @StateObject private var library = LibraryStore()
     @StateObject private var player = PlayerEngine()
     @StateObject private var settings = SettingsStore()
+    @StateObject private var spectrum = SpectrumStore.shared
 
     var body: some Scene {
         WindowGroup {
@@ -12,6 +13,7 @@ struct MusicPlayerApp: App {
                 .environmentObject(library)
                 .environmentObject(player)
                 .environmentObject(settings)
+                .environmentObject(spectrum)
                 .preferredColorScheme(.dark)
                 .onAppear {
                     Theme.sync(from: settings)
@@ -20,6 +22,12 @@ struct MusicPlayerApp: App {
                     library.syncSystemLibrary()
                 }
                 .onChange(of: settings.accentIndex) { _ in Theme.sync(from: settings) }
+                // 切歌后台补词：有缺就联网补（歌词/词曲/年月），串行、失败静默
+                .onChange(of: player.current?.id) { _ in
+                    guard let song = player.current, library.needsEnrich(song) else { return }
+                    let id = song.id
+                    Task.detached(priority: .utility) { await library.enrichMissing(id) }
+                }
         }
     }
 }

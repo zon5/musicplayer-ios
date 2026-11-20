@@ -15,6 +15,15 @@ struct Song: Identifiable, Codable, Equatable {
     var systemID: String?
     var assetURL: String?
 
+    // 发布年月 / 作词 / 作曲：与安卓 Models.kt 同名同口径。
+    // 查不到就是 nil，绝不编；Optional 且带默认值，旧 library.json 缺这些键也能解码。
+    /// 发布年月，形如 "2024.05"（标签年份 / 在线专辑发行时间）
+    var releaseYm: String? = nil
+    /// 作词人（界面显示成「词：X」）
+    var writerLyric: String? = nil
+    /// 作曲人（界面显示成「曲：X」）
+    var writerMusic: String? = nil
+
     var id: String { systemID ?? fileName }
     var isSystem: Bool { systemID != nil }
 
@@ -55,4 +64,9 @@ enum SongTitle {
 struct LrcLine {
     let time: Double
     let text: String
+}
+
+/// 某首歌的歌词/词曲/年月被后台补全后发出，object 是 song.id
+extension Notification.Name {
+    static let songMetaDidUpdate = Notification.Name("songMetaDidUpdate")
 }

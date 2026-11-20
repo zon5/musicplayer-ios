@@ -52,27 +52,16 @@ struct LyricsView: View {
         .onAppear { reload() }
         .onChange(of: player.current?.id) { _ in reload() }
         .onChange(of: player.position) { _ in updateIndex() }
+        .onReceive(NotificationCenter.default.publisher(for: .songMetaDidUpdate)) { note in
+            if note.object as? String == player.current?.id { reload() }
+        }
     }
 
     private func reload() {
         lines = []
         index = -1
-
         guard let song = player.current else { return }
-
-        var url: URL? = nil
-        if let name = song.lrcName {
-            let u = LibraryStore.documents.appendingPathComponent(name)
-            if FileManager.default.fileExists(atPath: u.path) { url = u }
-        }
-        if url == nil {
-            let base = (song.fileName as NSString).deletingPathExtension
-            let guess = LibraryStore.documents.appendingPathComponent(base + ".lrc")
-            if FileManager.default.fileExists(atPath: guess.path) { url = guess }
-        }
-        guard let lrcURL = url, let raw = LrcParser.readText(lrcURL) else { return }
-
-        lines = LrcParser.parse(raw)
+        lines = LrcParser.lines(for: song)
         updateIndex()
     }
 

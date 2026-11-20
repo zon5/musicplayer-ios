@@ -129,9 +129,17 @@ struct NowPlayingView: View {
                         .font(.system(size: 15, weight: .medium))
                         .foregroundColor(Theme.text2)
                         .lineLimit(1)
-                    Text(page == 0 ? "点此看歌词" : "点此看封面")
-                        .font(.system(size: 10))
-                        .foregroundColor(Theme.text3)
+                    HStack(spacing: 4) {
+                        Text(player.current?.displayArtist ?? "")
+                            .font(.system(size: 11))
+                            .foregroundColor(Theme.text3)
+                            .lineLimit(1)
+                        if let ym = player.current?.releaseYm, !ym.isEmpty {
+                            Text("· \(ym)")
+                                .font(.system(size: 11))
+                                .foregroundColor(Theme.accent)
+                        }
+                    }
                 }
             }
             Spacer()

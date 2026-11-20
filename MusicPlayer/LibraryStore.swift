@@ -91,6 +91,16 @@ final class LibraryStore: ObservableObject {
                 }
             }
 
+            // 发行年月：系统库优先 releaseDate，退到 YEAR；都拿到时才格式化成 "2024.05"
+            var ym: String? = nil
+            if let rd = item.releaseDate {
+                ym = LibraryStore.formatYearMonth(rd)
+            } else if let y = (item.value(forProperty: MPMediaItemPropertyYear) as? NSNumber)?.intValue, y > 0 {
+                ym = String(format: "%04d", y)
+            }
+            // 作曲：系统库只有 Composer 字段（作词人 Apple 没给），先兜底，联网补全时再覆盖
+            let composer = item.value(forProperty: MPMediaItemPropertyComposer) as? String
+
             let song = Song(
                 fileName: "sys_\(pid).m4a",
                 title: item.title ?? "",
@@ -101,7 +111,10 @@ final class LibraryStore: ObservableObject {
                 artworkName: artName,
                 lrcName: nil,
                 systemID: pid,
-                assetURL: url.absoluteString
+                assetURL: url.absoluteString,
+                releaseYm: ym,
+                writerLyric: nil,
+                writerMusic: composer.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
             )
             songs.append(song)
             changed = true
@@ -155,6 +168,47 @@ final class LibraryStore: ObservableObject {
         return img
     }
 
+    /// Date → "2024.05"（只有年份时给 "2024"），和安卓 releaseYmOf 同口径
+    static func formatYearMonth(_ date: Date) -> String {
+        let c = Calendar(identifier: .gregorian).dateComponents([.year, .month], from: date)
+        guard let y = c.year else { return "" }
+        if let m = c.month { return String(format: "%04d.%02d", y, m) }
+        return String(format: "%04d", y)
+    }
+
+    /// 给一首歌联网补「歌词 / 词曲 / 发行年月」，结果落盘到 library.json + lrc 缓存。
+    /// 只补空字段，不覆盖已有值（用户手动填过的优先）；完整跑完自动 save。
+    func enrichMissing(_ songID: String) async {
+        guard let idx = songs.firstIndex(where: { $0.id == songID }) else { return }
+        var song = songs[idx]
+        let meta = await MetaFetcher.shared.enrich(song: song)
+        guard !meta.isEmpty else { return }
+
+        // 歌词落盘：写成同名 lrc 缓存，LyricsView / BottomDock 都从这里读
+        if let lrc = meta.lrc, !lrc.isEmpty {
+            let name = "net_" + Self.stableHash(song.id) + ".lrc"
+            if (try? lrc.write(to: Self.documents.appendingPathComponent(name), atomically: true, encoding: .utf8)) != nil {
+                song.lrcName = name
+            }
+        }
+        if song.releaseYm == nil { song.releaseYm = meta.releaseYm }
+        if song.writerLyric == nil { song.writerLyric = meta.writerLyric }
+        if song.writerMusic == nil { song.writerMusic = meta.writerMusic }
+
+        // @Published songs 必须主线程写，否则 SwiftUI 会警告 / 列表不刷新
+        await MainActor.run {
+            self.songs[idx] = song
+            self.save()
+            // 通知歌词视图 / dock 重新读歌词（player 手里的 Song 副本不会随 library 刷新）
+            NotificationCenter.default.post(name: .songMetaDidUpdate, object: song.id, userInfo: ["song": song])
+        }
+    }
+
+    /// 首页/播放时按需补：缺任意一项就联网，串行避免打爆接口
+    func needsEnrich(_ song: Song) -> Bool {
+        song.lrcName == nil || song.releaseYm == nil || song.writerLyric == nil || song.writerMusic == nil
+    }
+
     static func stableHash(_ s: String) -> String {
         var h: UInt64 = 5381
         for b in Array(s.utf8) { h = (h &* 33) &+ UInt64(b) }
@@ -187,6 +241,23 @@ enum SongFactory {
         let seconds = asset.duration.seconds
         let duration = seconds.isFinite && seconds > 0 ? seconds : 0
 
+        // 词曲 / 发行年份：读文件标签（ID3 TCOM/TEXT/TYER、Vorbis COMPOSER/LYRICIST/DATE、MP4 ©wrt/©lyr/©day）
+        var lyricist: String? = nil
+        var composer: String? = nil
+        var releaseYm: String? = nil
+        for it in asset.metadata {
+            let key = (it.key as? AVMetadataKey)?.rawValue ?? ""
+            guard let v = it.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !v.isEmpty else { continue }
+            switch key {
+            case "TCOM", "COMPOSER", "\u{00A9}wrt": composer = v
+            case "TEXT", "LYRICIST", "\u{00A9}lyr": lyricist = v
+            case "TYER", "TDRC", "DATE", "\u{00A9}day":
+                if let ym = yearMonthOf(v) { releaseYm = ym }
+            default: break
+            }
+        }
+
         var artName: String? = nil
         if let artData = items.first(where: { $0.commonKey == .commonKeyArtwork })?.dataValue {
             let n = LibraryStore.stableHash(name) + ".jpg"
@@ -208,8 +279,25 @@ enum SongFactory {
             duration: duration,
             addedAt: Date(),
             artworkName: artName,
-            lrcName: hasLrc ? lrcName : nil
+            lrcName: hasLrc ? lrcName : nil,
+            releaseYm: releaseYm,
+            writerLyric: lyricist,
+            writerMusic: composer
         )
+    }
+
+    /// 从 "2013-05-20" / "2013/05" / "2013" 抠出 "2013.05" / "2013"
+    private static func yearMonthOf(_ text: String) -> String? {
+        let ns = text as NSString
+        guard let yRe = try? NSRegularExpression(pattern: "(\\d{4})"),
+              let ym = yRe.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)),
+              let y = Int(ns.substring(with: ym.range(at: 1))), (1950...2100).contains(y) else { return nil }
+        if let mRe = try? NSRegularExpression(pattern: "\\d{4}[-/.](\\d{1,2})"),
+           let mm = mRe.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)),
+           let mo = Int(ns.substring(with: mm.range(at: 1))), (1...12).contains(mo) {
+            return String(format: "%04d.%02d", y, mo)
+        }
+        return String(format: "%04d", y)
     }
 
     private static func meta(_ items: [AVMetadataItem], _ key: AVMetadataKey) -> String? {
