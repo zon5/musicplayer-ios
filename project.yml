@@ -1,0 +1,53 @@
+name: MusicPlayer
+options:
+  bundleIdPrefix: com.zhang.music
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: false
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+
+targets:
+  MusicPlayer:
+    type: application
+    platform: iOS
+    sources:
+      - path: MusicPlayer
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zhang.music.local
+        PRODUCT_NAME: MusicPlayer
+        TARGETED_DEVICE_FAMILY: "1"
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_BITCODE: NO
+    info:
+      path: Support/Info.plist
+      properties:
+        CFBundleDisplayName: 本地音乐
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIApplicationSupportsIndirectInputEvents: true
+        UIRequiresFullScreen: true
+        UIBackgroundModes:
+          - audio
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+
+schemes:
+  MusicPlayer:
+    build:
+      targets:
+        MusicPlayer: all
+    run:
+      config: Debug
+    archive:
+      config: Release
