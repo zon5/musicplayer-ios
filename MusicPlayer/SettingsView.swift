@@ -59,7 +59,7 @@ struct SettingsView: View {
                     .padding(.vertical, 4)
                 }
 
-                Section(header: Text("播放"), footer: Text("沉浸式播放：每首歌播到设定比例就淡出接下一首，不停顿。")) {
+                Section(header: Text("播放"), footer: Text("沉浸式播放（串烧）：每首歌把「一遍主歌 + 一遍副歌」听完就换下一首——自动分析段落结构，切点落在人声收住的段落边界上（优先在间奏里淡出），不会把唱到一半的人声切断。打开它会自动开启「智能过渡」。")) {
                     Picker("点歌方式", selection: $settings.tapAction) {
                         Text("立即播放").tag(0); Text("下一首插播").tag(1)
                     }
@@ -88,7 +88,7 @@ struct SettingsView: View {
                     }
                 }
 
-                Section(header: Text("智能过渡"), footer: Text("切歌时对旧歌淡出、新歌淡入。iOS 版为淡入淡出交叉，暂不支持安卓版的节拍自动对齐。")) {
+                Section(header: Text("智能过渡"), footer: Text("「像 DJ 一样接歌」：自动分析两首歌的 BPM 与曲尾收尾点，做变速对齐（变速不变调）+ 小节线对齐的等功率交叉淡入淡出。过渡时长只在手动切歌的淡出时使用；串烧的淡出长度由段落/小节自动决定。")) {
                     Toggle("开启智能过渡", isOn: $settings.crossfadeOn).tint(settings.accent)
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {

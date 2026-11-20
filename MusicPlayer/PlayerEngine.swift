@@ -377,20 +377,43 @@ final class PlayerEngine: NSObject, ObservableObject {
         plannedForSongID = song.id
         let a = song
         let b = queue[index + 1]
+        let immersive = settings?.immersiveOn == true
+        let ratio = Double(settings?.immersiveRatio ?? 0.65)
         Task.detached(priority: .utility) { [weak self] in
             let ba = BeatAnalyzer.shared.beat(for: a)
             let bb = BeatAnalyzer.shared.beat(for: b)
-            let plan: MixPlan
+            var plan: MixPlan
             if ba.valid || bb.valid {
                 plan = AutoMixer.plan(a: ba, aDurationMs: Int64(a.duration * 1000), b: bb)
             } else {
                 plan = AutoMixer.fallback(aDurationMs: Int64(a.duration * 1000))
+            }
+            if immersive {
+                // 沉浸式（串烧模式）：切点 = 「听完一遍主歌 + 一遍副歌」的段落边界（同安卓）
+                if let st = StructureAnalyzer.shared.structure(for: a), st.valid {
+                    plan.fadeStartMs = st.cutMs
+                    plan.crossfadeMs = st.fadeMs
+                    plan.label = st.note
+                } else {
+                    // 结构分析失败（整首能量太平 / 系统库歌）→ 退回按比例切
+                    let durMs = Int64(a.duration * 1000)
+                    plan.fadeStartMs = max(0, Int64(Double(durMs) * ratio))
+                    plan.crossfadeMs = 6000
+                    plan.label = "交叉淡入淡出（未识别到段落边界）"
+                }
             }
             DispatchQueue.main.async {
                 guard let self = self, self.current?.id == a.id, self.mixEnabled else { return }
                 self.pendingPlan = plan
             }
         }
+    }
+
+    /// 交叉淡化时长上限：沉浸式（串烧）用段落分析算出的淡出长度，上限放到 8s；
+    /// 普通模式仍尊重设置里的过渡秒数。
+    private var fadeCap: Double {
+        let base = Double(settings?.crossfadeSec ?? 8)
+        return settings?.immersiveOn == true ? max(8, base) : base
     }
 
     /// 每次 tick 检查：进度是否到了淡出起点，到点就启动交叉淡化
@@ -403,7 +426,7 @@ final class PlayerEngine: NSObject, ObservableObject {
         guard t >= fadeStart else { return }
 
         let nextSong = queue[index + 1]
-        let crossSec = max(0.5, min(Double(plan.crossfadeMs) / 1000.0, Double(settings?.crossfadeSec ?? 8)))
+        let crossSec = max(0.5, min(Double(plan.crossfadeMs) / 1000.0, fadeCap))
         let ratio = plan.tempoRatio
         let gainB = plan.gainB
         let seekSec = Double(plan.seekBMs) / 1000.0
@@ -476,7 +499,7 @@ final class PlayerEngine: NSObject, ObservableObject {
     /// 用户手动点「下一首」时：若串烧开着且有方案，用真交叉淡化；否则普通淡出切歌
     func crossfadeToNext() {
         if mixEnabled, let plan = pendingPlan, !mixActive {
-            let crossSec = max(0.5, min(Double(plan.crossfadeMs) / 1000.0, Double(settings?.crossfadeSec ?? 8)))
+            let crossSec = max(0.5, min(Double(plan.crossfadeMs) / 1000.0, fadeCap))
             let nextSong = queue[index + 1]
             if useEffects, let url = nextSong.playURL,
                effects.prepareStandby(url: url, seekSec: Double(plan.seekBMs) / 1000.0,
@@ -538,24 +561,10 @@ final class PlayerEngine: NSObject, ObservableObject {
             // 睡眠定时
             self.checkSleep(s)
             // 真串烧：后台预排方案 + 到点交叉淡化
+            // （沉浸式的「主歌+副歌」切点已经在 planAhead 里由段落结构分析决定，这里不再按比例覆盖）
             if s.crossfadeOn {
                 self.planAhead()
                 self.maybeStartMix(t)
-            }
-            // 沉浸式播放（串烧模式）：在设定的歌曲比例处提前进入过渡
-            if s.immersiveOn, !self.mixActive, self.duration > 1,
-               t >= self.duration * Double(s.immersiveRatio), self.pendingPlan == nil {
-                // 沉浸式用比例覆盖淡出起点：把方案里的 fadeStart 提前到该比例
-                if var p = self.pendingPlan {
-                    p.fadeStartMs = Int64(self.duration * Double(s.immersiveRatio) * 1000)
-                    self.pendingPlan = p
-                } else {
-                    // 还没排好方案时，造一个「在该比例淡出」的方案
-                    let durMs = Int64(self.duration * 1000)
-                    var p = AutoMixer.fallback(aDurationMs: durMs)
-                    p.fadeStartMs = Int64(self.duration * Double(s.immersiveRatio) * 1000)
-                    self.pendingPlan = p
-                }
             }
         }
     }
