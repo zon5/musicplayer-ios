@@ -422,6 +422,8 @@ final class PlayerEngine: NSObject, ObservableObject {
         } else if let curPlayer = player, let url = nextSong.playURL {
             // 系统库歌：双 AVPlayer 交叉淡化（拿不到 PCM，但交叉淡化本身是真的）
             let item = AVPlayerItem(url: url)
+            // 变速不变调（对齐安卓 ExoPlayer）：spectral 算法在变 rate 时保持音高
+            item.audioTimePitchAlgorithm = .spectral
             let standby = AVPlayer(playerItem: item)
             if seekSec > 0 { standby.seek(to: CMTime(seconds: seekSec, preferredTimescale: 600)) }
             standby.rate = ratio

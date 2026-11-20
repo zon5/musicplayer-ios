@@ -14,6 +14,10 @@ final class AudioEffects {
     // 两条 deck：主路 A / 备路 B
     private let deckA = AVAudioPlayerNode()
     private let deckB = AVAudioPlayerNode()
+    // ⚠️ 变速必须走 TimePitch（rate 变速但 pitch 不变），否则串烧拉 BPM 会整首歌变调。
+    // 安卓 ExoPlayer 的 PlaybackParameters(speed) 也是变速不变调，这里对齐它。
+    private let pitchA = AVAudioUnitTimePitch()
+    private let pitchB = AVAudioUnitTimePitch()
     private let eqA = AVAudioUnitEQ(numberOfBands: 7)
     private let eqB = AVAudioUnitEQ(numberOfBands: 7)
     private let distortionA = AVAudioUnitDistortion()
@@ -22,6 +26,8 @@ final class AudioEffects {
     private var activeIsA = true          // 当前哪条是主 deck
     private var active: AVAudioPlayerNode { activeIsA ? deckA : deckB }
     private var standby: AVAudioPlayerNode { activeIsA ? deckB : deckA }
+    private var activePitch: AVAudioUnitTimePitch { activeIsA ? pitchA : pitchB }
+    private var standbyPitch: AVAudioUnitTimePitch { activeIsA ? pitchB : pitchA }
     private var activeEq: AVAudioUnitEQ { activeIsA ? eqA : eqB }
     private var fileA: AVAudioFile?
     private var fileB: AVAudioFile?
@@ -41,8 +47,12 @@ final class AudioEffects {
 
     init() {
         engine.attach(deckA); engine.attach(deckB)
+        engine.attach(pitchA); engine.attach(pitchB)
         engine.attach(eqA); engine.attach(eqB)
         engine.attach(distortionA); engine.attach(distortionB)
+
+        // 变速不变调：rate 由 TimePitch 负责，pitch 偏移恒为 0
+        for p in [pitchA, pitchB] { p.rate = 1; p.pitch = 0; p.overlap = 8 }
 
         let freqs: [Float] = [60, 150, 400, 1000, 2400, 6000, 15000]
         for eq in [eqA, eqB] {
@@ -56,11 +66,13 @@ final class AudioEffects {
         }
         for d in [distortionA, distortionB] { d.preGain = 0; d.wetDryMix = 0 }
 
-        // A 链 → eqA → distortionA → mixer；B 链 → eqB → distortionB → mixer
-        engine.connect(deckA, to: eqA, format: nil)
+        // A 链 → timePitch → eqA → distortionA → mixer；B 链同理
+        engine.connect(deckA, to: pitchA, format: nil)
+        engine.connect(pitchA, to: eqA, format: nil)
         engine.connect(eqA, to: distortionA, format: nil)
         engine.connect(distortionA, to: engine.mainMixerNode, format: nil)
-        engine.connect(deckB, to: eqB, format: nil)
+        engine.connect(deckB, to: pitchB, format: nil)
+        engine.connect(pitchB, to: eqB, format: nil)
         engine.connect(eqB, to: distortionB, format: nil)
         engine.connect(distortionB, to: engine.mainMixerNode, format: nil)
 
@@ -108,6 +120,7 @@ final class AudioEffects {
 
         deckA.stop(); deckB.stop()
         deckA.rate = 1; deckB.rate = 1
+        pitchA.rate = 1; pitchB.rate = 1
         deckA.volume = 1; deckB.volume = 0
         deckA.scheduleFile(f, at: nil) { [weak self] in
             DispatchQueue.main.async { self?.onFinished?() }
@@ -139,6 +152,7 @@ final class AudioEffects {
     private func stopInternal() {
         deckA.stop(); deckB.stop()
         deckA.rate = 1; deckB.rate = 1
+        pitchA.rate = 1; pitchB.rate = 1
         deckA.volume = 1; deckB.volume = 0
         mixing = false; mixLabel = ""
         isPlaying = false
@@ -164,6 +178,7 @@ final class AudioEffects {
         let frames = AVAudioFrameCount(f.length - offset)
         active.volume = 1
         active.rate = 1
+        activePitch.rate = 1
         if frames > 0 {
             active.scheduleSegment(f, startingFrame: offset, frameCount: frames, at: nil) { [weak self] in
                 DispatchQueue.main.async { self?.onFinished?() }
@@ -202,7 +217,9 @@ final class AudioEffects {
         guard frames > 0 else { return false }
         if activeIsA { fileB = f } else { fileA = f }
         standby.stop()
-        standby.rate = max(Float(0.5), min(Float(2.0), tempoRatio))
+        standby.rate = 1
+        // 用 TimePitch 改速率（变速不变调），范围与安卓 ±7% 对齐
+        standbyPitch.rate = max(Float(0.5), min(Float(2.0), tempoRatio))
         standby.volume = 0
         standby.scheduleSegment(f, startingFrame: offset, frameCount: frames, at: nil)
         return true
@@ -250,6 +267,8 @@ final class AudioEffects {
         if activeIsA { fileA = nil; activeIsA = false } else { fileB = nil; activeIsA = true }
         incoming.volume = 1
         incoming.rate = 1
+        // 新主曲速率归 1（变速只用于过渡期，接稳后恢复原速，否则整首都会快/慢）
+        activePitch.rate = 1
         // ⚠️ 用新主曲的文件重算时长/采样率，否则 poll 会用旧曲时长误判播放结束
         if let nf = activeFile {
             sampleRate = nf.processingFormat.sampleRate
@@ -266,8 +285,10 @@ final class AudioEffects {
         if mixing {
             standby.stop()
             standby.volume = 0
+            standbyPitch.rate = 1
             active.volume = 1
             active.rate = 1
+            activePitch.rate = 1
             mixing = false
             mixLabel = ""
         }
