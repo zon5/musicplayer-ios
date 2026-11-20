@@ -6,49 +6,38 @@ struct NowPlayingView: View {
     @EnvironmentObject var settings: SettingsStore
     @Environment(\.dismiss) private var dismiss
 
-    @State private var showLyrics = false
+    // 封面 = 0，歌词 = 1（和安卓一致：横向 Pager 两页）
+    @State private var page = 0
     @State private var scrubbing = false
     @State private var scrubValue: Double = 0
     @State private var dragOffset: CGFloat = 0
 
     var body: some View {
         GeometryReader { geo in
-            let artSize = min(geo.size.width - 72, min(geo.size.height * 0.42, 320))
-
             ZStack {
                 background.ignoresSafeArea()
 
                 VStack(spacing: 0) {
                     topBar
 
-                    Spacer(minLength: 8)
-
-                    ZStack {
-                        // 封面页：氛围画框（和安卓的歌词图框同源），无封面/关闭画框时退回静态封面
-                        Group {
-                            if settings.atmosOn, let song = player.current {
-                                AtmosScene(title: song.displayTitle, playing: player.isPlaying)
-                                    .clipShape(RoundedRectangle(cornerRadius: artSize * 0.09, style: .continuous))
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: artSize * 0.09, style: .continuous)
-                                            .stroke(Color.white.opacity(0.14), lineWidth: 1)
-                                    )
-                            } else {
-                                ArtworkView(song: player.current, size: artSize)
-                            }
-                        }
-                        .shadow(color: Color.black.opacity(0.55), radius: 24, x: 0, y: 10)
-                        .opacity(showLyrics ? 0 : 1)
-                        .gesture(dismissDrag)
-                        .onTapGesture { toggleLyrics() }
-
-                        LyricsView()
-                            .opacity(showLyrics ? 1 : 0)
-                            .allowsHitTesting(showLyrics)
+                    // 两页 Pager：封面 / 歌词，左右滑动翻页
+                    TabView(selection: $page) {
+                        coverPage(geo: geo).tag(0)
+                        lyricsPage(geo: geo).tag(1)
                     }
-                    .frame(width: artSize, height: artSize)
+                    .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
+                    .indexViewStyle(PageIndexViewStyle(backgroundDisplayMode: .never))
+                    .frame(maxHeight: .infinity)
 
-                    Spacer(minLength: 8)
+                    // 两个小圆点
+                    HStack(spacing: 6) {
+                        ForEach(0..<2) { i in
+                            Circle()
+                                .fill(page == i ? Theme.accent : Color.white.opacity(0.28))
+                                .frame(width: page == i ? 7 : 6, height: page == i ? 7 : 6)
+                        }
+                    }
+                    .padding(.vertical, 8)
 
                     infoBlock
                     progressBlock
@@ -56,58 +45,69 @@ struct NowPlayingView: View {
                 }
                 .padding(.horizontal, 24)
                 .padding(.bottom, 12)
-                .offset(y: dragOffset)
-                .opacity(1.0 - min(dragOffset / 700.0, 0.35))
+                // 整页下滑：只在封面页启用（歌词页整页接管会吞掉歌词竖向滚动）
+                .offset(y: page == 0 ? dragOffset : 0)
+                .opacity(1.0 - (page == 0 ? min(dragOffset / 700.0, 0.35) : 0))
+                .gesture(coverDismissDrag)
             }
         }
         .statusBar(hidden: false)
     }
 
-    private func toggleLyrics() {
-        withAnimation(.easeInOut(duration: 0.28)) { showLyrics.toggle() }
+    // MARK: - 封面页：正方形专辑封面（安卓封面页是 1:1 album art，不是画框）
+    private func coverPage(geo: GeometryProxy) -> some View {
+        let size = min(geo.size.width - 72, min(geo.size.height * 0.42, 320))
+        return VStack {
+            Spacer(minLength: 0)
+            ArtworkView(song: player.current, size: size)
+                .shadow(color: Color.black.opacity(0.5), radius: 22, x: 0, y: 10)
+                .onTapGesture { withAnimation { page = 1 } }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var dismissDrag: some Gesture {
-        DragGesture(minimumDistance: 25)
-            .onChanged { v in
-                if v.translation.height > 0 {
-                    dragOffset = min(v.translation.height, 420)
-                }
-            }
-            .onEnded { v in
-                if v.translation.height > 120 {
-                    dismiss()
+    // MARK: - 歌词页：4:3 氛围画框 + 歌词列表（和安卓歌词页一致）
+    private func lyricsPage(geo: GeometryProxy) -> some View {
+        let frameW = (geo.size.width - 48) * 0.94
+        let frameH = frameW * 3.0 / 4.0
+        return VStack(spacing: 6) {
+            Group {
+                if settings.atmosOn, let song = player.current {
+                    AtmosScene(title: song.displayTitle, playing: player.isPlaying)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .stroke(Color.white.opacity(0.16), lineWidth: 1)
+                        )
                 } else {
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
-                        dragOffset = 0
-                    }
+                    ArtworkView(song: player.current, size: frameW)
+                        .frame(width: frameW, height: frameH)
                 }
             }
+            .frame(width: frameW, height: frameH)
+            .shadow(color: Color.black.opacity(0.5), radius: 18, x: 0, y: 8)
+            // 歌词页下滑只挂图框这一块，不吞歌词列表滚动
+            .gesture(frameDismissDrag)
+
+            LyricsView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
+    // MARK: - 背景：深色纯色 + 极淡氛围烘托（安卓整屏是纯色，画框只在中间）
     private var background: some View {
         ZStack {
-            // 底层永远是主题深色。安卓播放页整屏也是纯色，画框只在中间一个图框里画。
             Theme.bg.ignoresSafeArea()
-
             if settings.atmosOn, let song = player.current {
-                // 整屏只做「氛围色烘托」：重度模糊 + 压暗，绝不清晰显示楼/窗，
-                // 否则会和中间的清晰图框叠成「楼中楼」，文字也全压在亮窗户上看不清。
-                AtmosScene(title: song.displayTitle, playing: player.isPlaying)
+                AtmosScene(title: song.displayTitle, playing: player.isPlaying, animated: false)
                     .ignoresSafeArea()
-                    .blur(radius: 34)
-                    .opacity(0.26)
-            } else if let song = player.current, let img = LibraryStore.artworkImage(for: song) {
-                Image(uiImage: img)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .blur(radius: 60)
-                    .opacity(0.30)
+                    .blur(radius: 40)
+                    .opacity(0.22)
             }
-
-            // 上/下压暗遮罩，保证顶部专辑名与底部控件在亮色氛围上也清楚
             LinearGradient(
-                colors: [Color.black.opacity(0.42), Color.black.opacity(0.10), Color.black.opacity(0.58)],
+                colors: [Color.black.opacity(0.30), Color.black.opacity(0.08), Color.black.opacity(0.55)],
                 startPoint: .top, endPoint: .bottom
             )
             .ignoresSafeArea()
@@ -116,45 +116,31 @@ struct NowPlayingView: View {
 
     private var topBar: some View {
         HStack {
-            Button {
-                dismiss()
-            } label: {
+            Button { dismiss() } label: {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundColor(Theme.text)
                     .frame(width: 44, height: 44)
             }
-
             Spacer()
-
-            VStack(spacing: 2) {
-                Text(albumText)
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundColor(Theme.text2)
-                    .lineLimit(1)
-                Text("正在播放")
-                    .font(.system(size: 10))
-                    .foregroundColor(Theme.text3)
+            Button { withAnimation { page = page == 0 ? 1 : 0 } } label: {
+                VStack(spacing: 2) {
+                    Text(player.current?.displayTitle ?? "")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundColor(Theme.text2)
+                        .lineLimit(1)
+                    Text(page == 0 ? "点此看歌词" : "点此看封面")
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.text3)
+                }
             }
-
             Spacer()
-
-            Button {
-                toggleLyrics()
-            } label: {
-                Image(systemName: showLyrics ? "photo" : "text.alignleft")
-                    .font(.system(size: 17))
-                    .foregroundColor(Theme.text)
-                    .frame(width: 44, height: 44)
-            }
+            Image(systemName: "music.note.list")
+                .font(.system(size: 17))
+                .foregroundColor(Theme.text3)
+                .frame(width: 44, height: 44)
         }
         .frame(height: 48)
-        .simultaneousGesture(dismissDrag)
-    }
-
-    private var albumText: String {
-        guard let album = player.current?.album, !album.isEmpty else { return "本地音乐" }
-        return album
     }
 
     private var infoBlock: some View {
@@ -164,14 +150,13 @@ struct NowPlayingView: View {
                 .foregroundColor(Theme.text)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
-
             Text(player.current?.displayArtist ?? "")
                 .font(.system(size: 13))
                 .foregroundColor(Theme.text2)
                 .lineLimit(1)
         }
-        .padding(.top, 18)
-        .padding(.bottom, 14)
+        .padding(.top, 10)
+        .padding(.bottom, 12)
         .padding(.horizontal, 8)
     }
 
@@ -194,7 +179,6 @@ struct NowPlayingView: View {
                 }
             )
             .tint(Theme.accent)
-
             HStack {
                 Text(fmt(scrubbing ? scrubValue : player.position))
                 Spacer()
@@ -208,50 +192,34 @@ struct NowPlayingView: View {
 
     private var controls: some View {
         HStack(spacing: 0) {
-            Button {
-                player.shuffle.toggle()
-            } label: {
+            Button { player.shuffle.toggle() } label: {
                 Image(systemName: "shuffle")
                     .font(.system(size: 16, weight: .medium))
                     .foregroundColor(player.shuffle ? Theme.accent : Theme.text3)
                     .frame(maxWidth: .infinity, minHeight: 48)
             }
-
-            Button {
-                player.prev()
-            } label: {
+            Button { player.prev() } label: {
                 Image(systemName: "backward.fill")
                     .font(.system(size: 25))
                     .foregroundColor(Theme.text)
                     .frame(maxWidth: .infinity, minHeight: 56)
             }
-
-            Button {
-                player.togglePlay()
-            } label: {
+            Button { player.togglePlay() } label: {
                 ZStack {
-                    Circle()
-                        .fill(Color.white)
-                        .frame(width: 66, height: 66)
+                    Circle().fill(Color.white).frame(width: 66, height: 66)
                     Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                         .font(.system(size: 25, weight: .semibold))
                         .foregroundColor(.black)
                         .offset(x: player.isPlaying ? 0 : 2)
                 }
             }
-
-            Button {
-                player.crossfadeToNext()
-            } label: {
+            Button { player.crossfadeToNext() } label: {
                 Image(systemName: "forward.fill")
                     .font(.system(size: 25))
                     .foregroundColor(Theme.text)
                     .frame(maxWidth: .infinity, minHeight: 56)
             }
-
-            Button {
-                cycleRepeat()
-            } label: {
+            Button { cycleRepeat() } label: {
                 Image(systemName: player.repeatMode == .one ? "repeat.1" : "repeat")
                     .font(.system(size: 16, weight: .medium))
                     .foregroundColor(player.repeatMode == .off ? Theme.text3 : Theme.accent)
@@ -274,5 +242,30 @@ struct NowPlayingView: View {
         guard t.isFinite, t >= 0 else { return "0:00" }
         let s = Int(t.rounded())
         return String(format: "%d:%02d", s / 60, s % 60)
+    }
+
+    // MARK: - 下滑收起：封面页整页下滑；歌词页只挂图框，避免吞列表滚动
+    private var coverDismissDrag: some Gesture {
+        DragGesture(minimumDistance: 25)
+            .onChanged { v in
+                // 歌词页的整页下滑不接管（会让歌词列表滚不动），只有封面页跟手
+                guard page == 0 else { return }
+                if v.translation.height > 0 { dragOffset = min(v.translation.height, 420) }
+            }
+            .onEnded { v in
+                guard page == 0 else { return }
+                if v.translation.height > 120 { dismiss() }
+                else { withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) { dragOffset = 0 } }
+            }
+    }
+
+    private var frameDismissDrag: some Gesture {
+        DragGesture(minimumDistance: 30)
+            .onEnded { v in
+                // 只认向下占优的甩动；横向留给 TabView 翻页
+                if v.translation.height > 140 && v.translation.height > abs(v.translation.width) {
+                    dismiss()
+                }
+            }
     }
 }

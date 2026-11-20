@@ -272,24 +272,58 @@ private func desat(_ c: Color, _ k: Float) -> Color {
 
 // MARK: - 绘制
 
+/// 画框动画时钟：和安卓 AtmosFrame 一样用「累加秒数」，playing=false 时钟停走、画面定格在
+/// 当前帧（而不是跳回 0）。⚠️ 不能用 ctx.date.timeIntervalSinceReferenceDate：那是 7.8 亿秒级，
+/// 传给 Float 精度只剩几十秒，动画看起来不动/乱跳；而且 TimelineView(.animation) 暂停时仍每帧重绘。
+/// 这里用 CADisplayLink 自驱：暂停时不发布新值 → Canvas 不重绘 → 不卡。
+final class SceneClock: ObservableObject {
+    @Published var t: Float = 0
+    private var link: CADisplayLink?
+    private var last: CFTimeInterval = 0
+    var playing: Bool = true
+
+    func start() {
+        guard link == nil else { return }
+        link = CADisplayLink(target: self, selector: #selector(tick(_:)))
+        link?.add(to: .main, forMode: .common)
+        last = 0
+    }
+    func stop() {
+        link?.invalidate()
+        link = nil
+        last = 0
+    }
+    @objc private func tick(_ l: CADisplayLink) {
+        guard playing else { return }
+        if last == 0 { last = l.timestamp; return }
+        let dt = l.timestamp - last
+        last = l.timestamp
+        t += Float(min(max(dt, 0), 0.05))
+    }
+}
+
 struct AtmosScene: View {
     let title: String
     var playing: Bool = true
+    /// 整屏背景传 false：只画一帧静态氛围色，不启动动画时钟（避免和图框双重重绘卡死）
+    var animated: Bool = true
 
     @State private var spec: AtmosSpec = AtmosSpec.build(title: "", accent: Theme.accent)
+    @StateObject private var clock = SceneClock()
 
     var body: some View {
-        TimelineView(.animation) { ctx in
-            Canvas { g, size in
-                let t = playing ? Float(ctx.date.timeIntervalSinceReferenceDate) : 0
-                drawScene(g: g, w: size.width, h: size.height, s: spec, t: t)
-            }
-        }
-        .onChange(of: title) { newValue in
-            spec = AtmosSpec.build(title: newValue, accent: Theme.accent)
+        Canvas { g, size in
+            drawScene(g: g, w: size.width, h: size.height, s: spec, t: clock.t)
         }
         .onAppear {
             spec = AtmosSpec.build(title: title, accent: Theme.accent)
+            clock.playing = playing
+            if animated { clock.start() }
+        }
+        .onDisappear { clock.stop() }
+        .onChange(of: playing) { newValue in clock.playing = newValue }
+        .onChange(of: title) { newValue in
+            spec = AtmosSpec.build(title: newValue, accent: Theme.accent)
         }
     }
 
