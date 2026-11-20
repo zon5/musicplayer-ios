@@ -95,7 +95,7 @@ final class LibraryStore: ObservableObject {
             var ym: String? = nil
             if let rd = item.releaseDate {
                 ym = LibraryStore.formatYearMonth(rd)
-            } else if let y = (item.value(forProperty: MPMediaItemPropertyYear) as? NSNumber)?.intValue, y > 0 {
+            } else if let y = (item.value(forProperty: "Year") as? NSNumber)?.intValue, y > 0 {
                 ym = String(format: "%04d", y)
             }
             // 作曲：系统库只有 Composer 字段（作词人 Apple 没给），先兜底，联网补全时再覆盖
@@ -196,11 +196,12 @@ final class LibraryStore: ObservableObject {
         if song.writerMusic == nil { song.writerMusic = meta.writerMusic }
 
         // @Published songs 必须主线程写，否则 SwiftUI 会警告 / 列表不刷新
+        let finalSong = song // 显式快照，避免跨 await 捕获 var
         await MainActor.run {
-            self.songs[idx] = song
+            self.songs[idx] = finalSong
             self.save()
             // 通知歌词视图 / dock 重新读歌词（player 手里的 Song 副本不会随 library 刷新）
-            NotificationCenter.default.post(name: .songMetaDidUpdate, object: song.id, userInfo: ["song": song])
+            NotificationCenter.default.post(name: .songMetaDidUpdate, object: finalSong.id, userInfo: ["song": finalSong])
         }
     }
 

@@ -32,7 +32,11 @@ final class SpectrumStore: ObservableObject {
     private var timer: Timer?
 
     init() {
-        window = (0..<n).map { i in 0.5 - 0.5 * cos(2.0 * .pi * Double(i) / Double(n - 1)) }
+        let denom = Double(n - 1)
+        window = (0..<n).map { i in
+            let phase = 2.0 * .pi * Double(i) / denom
+            return 0.5 - 0.5 * cos(phase)
+        }
         re = [Float](repeating: 0, count: n)
         im = [Float](repeating: 0, count: n)
         buf = [Float](repeating: 0, count: n)
